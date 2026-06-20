@@ -1,0 +1,13 @@
+node_modules
+web
+.git
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+package-lock.json
+.next
+data
+*.xlsx
+*.csv

@@ -1,0 +1,22 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# Next.js dashboard (web/)
+web/node_modules/
+web/.next/
+web/out/
+web/.env.local
+web/next-env.d.ts
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+ghl-location-tokens.json
+
+# Lead data / PII — never commit (xlsx workbooks live in data/)
+data/
+*.xlsx
+*.csv

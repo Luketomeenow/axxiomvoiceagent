@@ -1,0 +1,82 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { supabase } from "@/lib/supabase";
+import type { Call, CallEvent } from "@/lib/types";
+
+/**
+ * Live monitor: shows calls that are currently in flight and streams transcript
+ * lines as they arrive via Supabase Realtime on outbound.call + outbound.call_event.
+ */
+export function LiveMonitor() {
+  const [activeCalls, setActiveCalls] = useState<Call[]>([]);
+  const [events, setEvents] = useState<Record<string, CallEvent[]>>({});
+  const eventsRef = useRef(events);
+  eventsRef.current = events;
+
+  async function loadActive() {
+    const { data } = await supabase
+      .from("call")
+      .select("*")
+      .in("status", ["queued", "ringing", "in-progress"])
+      .order("created_at", { ascending: false });
+    setActiveCalls((data as Call[]) ?? []);
+  }
+
+  useEffect(() => {
+    loadActive();
+    const ch = supabase
+      .channel("live-monitor")
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, loadActive)
+      .on("postgres_changes", { event: "INSERT", schema: "outbound", table: "call_event" }, (payload) => {
+        const ev = payload.new as CallEvent;
+        if (!ev.call_id) return;
+        const next = { ...eventsRef.current };
+        const list = next[ev.call_id] ? [...next[ev.call_id]] : [];
+        list.push(ev);
+        next[ev.call_id] = list.slice(-40);
+        setEvents(next);
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, []);
+
+  return (
+    <div className="rounded-xl border border-white/10 bg-panel p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400" />
+        <h2 className="text-lg font-semibold">Live calls</h2>
+        <span className="text-sm text-slate-400">({activeCalls.length} active)</span>
+      </div>
+      {activeCalls.length === 0 ? (
+        <p className="text-sm text-slate-400">No calls in progress. Start the campaign or use “Call now”.</p>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2">
+          {activeCalls.map((call) => (
+            <div key={call.id} className="rounded-lg border border-white/10 bg-ink/60 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-mono text-sm">{call.phone_number}</span>
+                <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-200">{call.status}</span>
+              </div>
+              <div className="h-44 space-y-1 overflow-y-auto text-sm">
+                {(events[call.id] ?? [])
+                  .filter((e) => e.type === "transcript" || e.type === "tool-call" || e.type === "consent")
+                  .map((e) => (
+                    <div key={e.id} className={e.role === "assistant" ? "text-sky-300" : "text-slate-200"}>
+                      <span className="mr-1 text-xs uppercase text-slate-500">
+                        {e.type === "transcript" ? e.role ?? "?" : e.type}
+                      </span>
+                      {e.text}
+                    </div>
+                  ))}
+                {!events[call.id]?.length && <div className="text-xs text-slate-500">Connecting…</div>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
