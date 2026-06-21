@@ -53,9 +53,13 @@ export interface LeadRow {
   city: string | null;
   state: string | null;
   zip: string | null;
+  region: string | null;
   oem_match: string | null;
   problem_type: string | null;
+  violation_codes: string | null;
   violation_count: number | null;
+  violation_details: string | null;
+  last_inspection_date: string | null;
   cert_expiry_date: string | null;
   lead_score: number | null;
   lead_tier: string | null;
@@ -64,6 +68,14 @@ export interface LeadRow {
   consent_recording: boolean | null;
   dnc: boolean;
   notes: string | null;
+  // Structured, sales-ready qualification fields (captured by the agent tools).
+  decision_maker: boolean | null;
+  current_provider: string | null;
+  timeline: string | null;
+  callback_name: string | null;
+  callback_phone: string | null;
+  callback_email: string | null;
+  qualified_at: string | null;
 }
 
 export interface CallRow {

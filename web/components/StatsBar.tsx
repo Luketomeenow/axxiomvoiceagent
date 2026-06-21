@@ -17,14 +17,16 @@ const ORDER = [
   "dnc",
 ];
 
-export function StatsBar({ refreshKey }: { refreshKey: number }) {
+export function StatsBar({ refreshKey, campaignId }: { refreshKey: number; campaignId: string | null }) {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.from("lead").select("disposition");
+      let q = supabase.from("lead").select("disposition");
+      if (campaignId) q = q.eq("campaign_id", campaignId);
+      const { data } = await q;
       if (cancelled || !data) return;
       const c: Record<string, number> = {};
       for (const r of data) c[r.disposition] = (c[r.disposition] ?? 0) + 1;
@@ -34,7 +36,7 @@ export function StatsBar({ refreshKey }: { refreshKey: number }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, campaignId]);
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6">

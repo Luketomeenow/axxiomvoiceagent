@@ -10,7 +10,7 @@ const PRESETS: { label: string; value: string }[] = [
   { label: "All", value: "all" },
 ];
 
-export function ExportButtons() {
+export function ExportButtons({ campaignId }: { campaignId: string | null }) {
   const [disposition, setDisposition] = useState("qualified");
 
   return (
@@ -28,13 +28,13 @@ export function ExportButtons() {
         ))}
       </select>
       <a
-        href={api.exportUrl(disposition, "xlsx")}
+        href={api.exportUrl(disposition, "xlsx", campaignId)}
         className="rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-semibold text-ink hover:bg-emerald-400"
       >
         Excel
       </a>
       <a
-        href={api.exportUrl(disposition, "csv")}
+        href={api.exportUrl(disposition, "csv", campaignId)}
         className="rounded-lg border border-white/20 px-3 py-1.5 text-sm font-semibold hover:bg-white/10"
       >
         CSV

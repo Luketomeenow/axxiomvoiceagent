@@ -23,8 +23,10 @@ export interface Lead {
   address: string | null;
   city: string | null;
   state: string | null;
+  region: string | null;
   oem_match: string | null;
   problem_type: string | null;
+  violation_codes: string | null;
   violation_count: number | null;
   cert_expiry_date: string | null;
   lead_score: number | null;
@@ -33,6 +35,14 @@ export interface Lead {
   attempts: number;
   dnc: boolean;
   notes: string | null;
+  // Sales-ready qualification fields captured on the call.
+  decision_maker: boolean | null;
+  current_provider: string | null;
+  timeline: string | null;
+  callback_name: string | null;
+  callback_phone: string | null;
+  callback_email: string | null;
+  qualified_at: string | null;
 }
 
 export interface Call {
@@ -64,6 +74,7 @@ export interface CallEvent {
 export interface Campaign {
   id: string;
   name: string;
+  region: string | null;
   status: "draft" | "running" | "paused" | "done";
   timezone: string;
   call_window_start: number;

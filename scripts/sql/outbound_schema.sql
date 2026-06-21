@@ -198,3 +198,46 @@ do $$
 begin
   create policy "dashboard read campaign"   on outbound.campaign   for select using (true);
 exception when duplicate_object then null; end $$;
+
+-- ===========================================================================
+-- Migrations (additive, safe to re-run) — region campaigns, code reference,
+-- and structured sales-ready qualification fields.
+-- ===========================================================================
+
+-- Region tagging: one campaign per region, region stamped on every lead.
+alter table outbound.campaign add column if not exists region text;
+alter table outbound.lead     add column if not exists region text;
+create index if not exists outbound_lead_region_idx on outbound.lead (region);
+
+-- Structured qualification fields captured by the agent (qualifyLead /
+-- recordDisposition). Previously these only lived inside the free-text `notes`.
+alter table outbound.lead add column if not exists decision_maker   boolean;
+alter table outbound.lead add column if not exists current_provider text;
+alter table outbound.lead add column if not exists timeline         text;
+alter table outbound.lead add column if not exists callback_name    text;
+alter table outbound.lead add column if not exists callback_phone   text;
+alter table outbound.lead add column if not exists callback_email   text;
+alter table outbound.lead add column if not exists qualified_at     timestamptz;
+
+-- ---------------------------------------------------------------------------
+-- code_reference — curated, authoritative elevator inspection / violation
+-- codes. The agent's lookupViolationCode tool reads ONLY from here so it never
+-- invents code meanings. Seed via `bun run import-codes`.
+-- ---------------------------------------------------------------------------
+create table if not exists outbound.code_reference (
+  code           text primary key,     -- normalized citation, e.g. "3.10.4"
+  jurisdiction   text,                  -- e.g. "CA Title 8" / "ASME A17.1"
+  title          text,                  -- short official title
+  plain_summary  text,                  -- one-line plain-English meaning
+  severity       text,                  -- informational | minor | major | critical
+  typical_remedy text,                  -- what's usually required to clear it
+  source_url     text,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now()
+);
+
+alter table outbound.code_reference enable row level security;
+do $$
+begin
+  create policy "dashboard read code_reference" on outbound.code_reference for select using (true);
+exception when duplicate_object then null; end $$;

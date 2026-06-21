@@ -50,6 +50,11 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
   const callRowId = await resolveCallRowId(message);
   const interested = args.interested === true;
 
+  const str = (v: unknown): string | undefined => {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s ? s : undefined;
+  };
+
   const noteParts = [
     args.currentProvider && `Current provider: ${args.currentProvider}`,
     args.timeline && `Timeline: ${args.timeline}`,
@@ -61,13 +66,21 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
   const notes = noteParts.join(" | ");
 
   if (leadId) {
+    // Write the structured, sales-ready fields (not just the free-text note),
+    // so the sales team gets clean columns to act on.
     await db()
       .from("lead")
       .update({
         consent_recording: true,
         notes: notes || null,
-        contact_phone: (args.bestCallbackPhone as string) || undefined,
-        contact_email: (args.bestCallbackEmail as string) || undefined,
+        decision_maker: typeof args.decisionMaker === "boolean" ? args.decisionMaker : null,
+        current_provider: str(args.currentProvider) ?? null,
+        timeline: str(args.timeline) ?? null,
+        callback_name: str(args.bestCallbackName) ?? null,
+        callback_phone: str(args.bestCallbackPhone) ?? null,
+        callback_email: str(args.bestCallbackEmail) ?? null,
+        contact_phone: str(args.bestCallbackPhone),
+        contact_email: str(args.bestCallbackEmail),
       })
       .eq("id", leadId);
   }
@@ -91,7 +104,10 @@ async function runRecordDisposition(args: Record<string, unknown>, message: Vapi
   const notes = (args.notes as string) || null;
 
   if (leadId) {
-    await db().from("lead").update({ disposition, notes }).eq("id", leadId);
+    const update: Record<string, unknown> = { disposition, notes };
+    // Stamp the moment a lead became sales-ready.
+    if (disposition === "qualified") update.qualified_at = new Date().toISOString();
+    await db().from("lead").update(update).eq("id", leadId);
   }
   if (callRowId) {
     await db().from("call").update({ disposition, outcome: disposition }).eq("id", callRowId);
@@ -134,6 +150,54 @@ async function runOptOut(args: Record<string, unknown>, message: VapiMessage): P
   return "Understood. I've added them to our do-not-call list. Apologize briefly for the interruption and end the call.";
 }
 
+/**
+ * Verified code lookup. Reads ONLY from outbound.code_reference so the agent
+ * never invents what a citation means. Tries an exact match on the normalized
+ * code, then a loose contains-match, then reports "not found" so the agent
+ * stays honest and defers to the team.
+ */
+async function runLookupViolationCode(args: Record<string, unknown>, message: VapiMessage): Promise<string> {
+  const callRowId = await resolveCallRowId(message);
+  const raw = typeof args.code === "string" ? args.code.trim() : "";
+  // Normalize for matching: keep alphanumerics and dots, uppercase.
+  const normalized = raw.toUpperCase().replace(/[^A-Z0-9.]/g, "");
+
+  let found: Record<string, unknown> | null = null;
+  if (normalized) {
+    const exact = await db().from("code_reference").select("*").eq("code", normalized).maybeSingle();
+    found = (exact.data as Record<string, unknown> | null) ?? null;
+    if (!found) {
+      const loose = await db()
+        .from("code_reference")
+        .select("*")
+        .ilike("code", `%${normalized}%`)
+        .limit(1)
+        .maybeSingle();
+      found = (loose.data as Record<string, unknown> | null) ?? null;
+    }
+  }
+
+  await recordEvent({
+    call_id: callRowId,
+    vapi_call_id: message.call?.id,
+    type: "tool-call",
+    text: `lookupViolationCode: ${raw}${found ? "" : " (not found)"}`,
+    payload: { query: raw, found: found?.code ?? null },
+  });
+
+  if (!found) {
+    return `No verified entry for "${raw}" in our reference. Do NOT guess its meaning — tell them our team will confirm the exact code details, and continue.`;
+  }
+
+  const parts = [
+    found.title && `Title: ${found.title}`,
+    found.plain_summary && `Means: ${found.plain_summary}`,
+    found.severity && `Severity: ${found.severity}`,
+    found.typical_remedy && `Typically requires: ${found.typical_remedy}`,
+  ].filter(Boolean);
+  return `Verified code ${found.code}. ${parts.join(". ")}. Explain this briefly and plainly; do not add details beyond this.`;
+}
+
 // --- Message handlers ------------------------------------------------------
 
 export async function handleOutboundToolCalls(message: VapiMessage): Promise<VapiToolResults> {
@@ -152,6 +216,8 @@ export async function handleOutboundToolCalls(message: VapiMessage): Promise<Vap
         result = await runRecordDisposition(args, message);
       } else if (name === OUTBOUND_TOOL_NAMES.optOut) {
         result = await runOptOut(args, message);
+      } else if (name === OUTBOUND_TOOL_NAMES.lookupViolationCode) {
+        result = await runLookupViolationCode(args, message);
       } else {
         result = `Unknown tool: ${name}`;
         log.warn("Unknown outbound tool called", { tool: name });

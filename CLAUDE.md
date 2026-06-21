@@ -10,7 +10,7 @@ Two agents share one Hono webhook service:
 - **Inbound** — answers every call 24/7, triages new leads vs. existing customers, books site surveys, transfers to a human (incl. a safety handoff for trapped/injured callers). Scope is inquiries + leads, **not** emergency dispatch.
 - **Outbound** — compliant qualification campaign that dials CA elevator-violation leads, qualifies/dispositions them, monitored from a Next.js dashboard in `web/`. Lives in a separate Supabase `outbound` schema.
 
-See `README.md` for the full setup/deploy/compliance narrative; this file is the quick operational map.
+See `docs/` for the full guides (`docs/README.md` is the index: setup, inbound, outbound campaigns, API reference, database, compliance) and `README.md` for the quick tour. This file is the operational map for working in the code.
 
 ## Runtime & commands
 
@@ -24,7 +24,8 @@ bun run typecheck    # tsc --noEmit — run this to validate changes
 
 bun run create-assistant            # create/update inbound Vapi assistant
 bun run create-outbound-assistant   # create/update outbound assistant
-bun run import-leads                 # seed outbound.lead from the workbook
+bun run import-leads <f> --region X  # seed outbound.lead for a region (one campaign per region)
+bun run import-codes <f>             # seed outbound.code_reference (verified violation codes)
 
 # Node fallbacks (no Bun): npm install, then *:node variants
 npm run import-leads:node
@@ -47,10 +48,11 @@ src/
   supabase/           ax_voice_call writer
   ai/                 Optional post-call Claude transcript analysis
 scripts/
-  create-assistant.ts, create-outbound-assistant.ts, import-leads.ts
+  create-assistant.ts, create-outbound-assistant.ts, import-leads.ts, import-codes.ts
   sql/                ax_voice_call.sql, outbound_schema.sql
-web/                  Next.js + Tailwind dashboard (live monitor, leads, controls, export)
-data/                 Lead workbooks (PII) — gitignored, never committed
+web/                  Next.js + Tailwind dashboard (region selector, monitor, leads, test-call, export)
+data/                 Lead workbooks + code lists (PII) — gitignored, never committed
+docs/                 Full documentation (see docs/README.md)
 ```
 
 ## Conventions

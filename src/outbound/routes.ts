@@ -5,6 +5,7 @@
  *   POST /outbound/campaign/start     mark a campaign running + start the worker
  *   POST /outbound/campaign/pause     pause campaigns + stop the worker
  *   POST /outbound/call-now/:leadId   manually dial one lead
+ *   POST /outbound/test-call          dial an arbitrary number to test the agent
  *   GET  /outbound/export             download leads as csv/xlsx by disposition
  */
 
@@ -13,7 +14,7 @@ import { cors } from "hono/cors";
 import * as XLSX from "xlsx";
 
 import { log } from "../lib/logger.ts";
-import { callNow, startCampaignWorker, stopCampaignWorker } from "./dialer.ts";
+import { callNow, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
 import { db } from "./db.ts";
 
 export const outbound = new Hono();
@@ -27,7 +28,10 @@ outbound.get("/outbound/campaigns", async (c) => {
 });
 
 outbound.get("/outbound/stats", async (c) => {
-  const { data, error } = await db().from("lead").select("disposition");
+  const campaignId = c.req.query("campaignId");
+  let q = db().from("lead").select("disposition");
+  if (campaignId) q = q.eq("campaign_id", campaignId);
+  const { data, error } = await q;
   if (error) return c.json({ error: error.message }, 500);
   const counts: Record<string, number> = {};
   for (const row of data ?? []) {
@@ -63,32 +67,53 @@ outbound.post("/outbound/call-now/:leadId", async (c) => {
   return c.json(result, result.ok ? 200 : 400);
 });
 
+// Dial an arbitrary number to test the agent (no lead row). Still DNC-checked.
+outbound.post("/outbound/test-call", async (c) => {
+  const body = await c.req.json<TestCallInput>().catch(() => ({}) as TestCallInput);
+  if (!body.phone) return c.json({ ok: false, reason: "phone is required" }, 400);
+  const result = await testCall(body);
+  log.info("Test call requested", { phone: body.phone, ok: result.ok });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
 const EXPORT_COLUMNS = [
   "building_name",
   "address",
   "city",
   "state",
   "zip",
+  "region",
   "contact_name",
   "contact_title",
   "contact_phone",
   "contact_email",
   "oem_match",
   "problem_type",
+  "violation_codes",
   "violation_count",
   "cert_expiry_date",
   "lead_score",
   "lead_tier",
   "disposition",
+  // Sales-ready qualification fields captured on the call.
+  "decision_maker",
+  "current_provider",
+  "timeline",
+  "callback_name",
+  "callback_phone",
+  "callback_email",
+  "qualified_at",
   "attempts",
   "notes",
 ] as const;
 
 outbound.get("/outbound/export", async (c) => {
   const disposition = c.req.query("disposition"); // e.g. "qualified"; omit for all
+  const campaignId = c.req.query("campaignId"); // scope to one region/campaign
   const format = (c.req.query("format") || "xlsx").toLowerCase();
 
   let query = db().from("lead").select(EXPORT_COLUMNS.join(","));
+  if (campaignId) query = query.eq("campaign_id", campaignId);
   if (disposition) {
     // Allow comma-separated dispositions, e.g. ?disposition=qualified,needs_followup
     const list = disposition.split(",").map((s) => s.trim()).filter(Boolean);

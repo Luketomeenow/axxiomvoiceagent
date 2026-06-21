@@ -1,8 +1,11 @@
 /**
  * Import leads from the workbook into outbound.lead.
  *
- *   bun run import-leads [path-to-xlsx] [--sheet "Tier A - Campaign Ready"]
+ *   bun run import-leads [path-to-xlsx] [--sheet "Tier A - Campaign Ready"] \
+ *                        [--region "CA — Bay Area"] [--campaign "Custom name"]
  *
+ * One campaign per region: --region names/creates the campaign (and is stamped
+ * on every lead) so the dashboard can launch + monitor each region on its own.
  * Defaults to data/axxiom_leads_CA_20260617.xlsx and the "Tier A - Campaign Ready"
  * sheet (the 703 enriched, named-contact rows). Normalizes phones to E.164,
  * dedupes on (device_id, contact_phone), flags toll-free-only leads as
@@ -35,8 +38,12 @@ function str(v: unknown): string | null {
 async function main() {
   const file = process.argv[2] && !process.argv[2].startsWith("--") ? process.argv[2] : DEFAULT_FILE;
   const sheetName = arg("--sheet") ?? DEFAULT_SHEET;
+  // One campaign per region. --region names the region; --campaign overrides the
+  // campaign name (defaults to the region). Region is stamped on every lead too.
+  const region = arg("--region") ?? null;
+  const campaignName = arg("--campaign") ?? region ?? `CA AmeriTex West — ${sheetName}`;
 
-  console.log(`Reading ${file} → sheet "${sheetName}"…`);
+  console.log(`Reading ${file} → sheet "${sheetName}"${region ? ` → region "${region}"` : ""}…`);
   const wb = XLSX.readFile(file);
   const sheet = wb.Sheets[sheetName];
   if (!sheet) {
@@ -48,10 +55,10 @@ async function main() {
   console.log(`Parsed ${rows.length} rows.`);
 
   // Upsert a campaign row so leads can be grouped + the worker has guardrails.
-  const campaignName = `CA AmeriTex West — ${sheetName}`;
+  const campaignFields = { name: campaignName, segment: "tier_a_campaign_ready", region };
   const { data: campaign, error: campErr } = await db()
     .from("campaign")
-    .upsert({ name: campaignName, segment: "tier_a_campaign_ready" }, { onConflict: "name" })
+    .upsert(campaignFields, { onConflict: "name" })
     .select("id")
     .maybeSingle();
   if (campErr) {
@@ -63,7 +70,7 @@ async function main() {
     const { data } = await db().from("campaign").select("id").eq("name", campaignName).maybeSingle();
     campaignId = data?.id as string | undefined;
     if (!campaignId) {
-      const { data: created } = await db().from("campaign").insert({ name: campaignName }).select("id").maybeSingle();
+      const { data: created } = await db().from("campaign").insert(campaignFields).select("id").maybeSingle();
       campaignId = created?.id as string | undefined;
     }
   }
@@ -96,6 +103,7 @@ async function main() {
       state: str(r.state),
       zip: str(r.zip),
       market: str(r.market),
+      region: region ?? str(r.region) ?? str(r.market),
       device_id: deviceId,
       equipment_type: str(r.equipment_type),
       manufacturer: str(r.manufacturer),

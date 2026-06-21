@@ -14,6 +14,7 @@
 import { assertOutbound, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
 import { db, isSuppressed, recordEvent, type LeadRow } from "./db.ts";
+import { toE164 } from "./phone.ts";
 
 const VAPI_API = "https://api.vapi.ai";
 
@@ -61,12 +62,84 @@ function variableValuesFor(lead: LeadRow): Record<string, string> {
     problemType: lead.problem_type ?? "an overdue inspection",
     oemMatch: lead.oem_match ?? "unknown",
     certExpiry: lead.cert_expiry_date ?? "unknown",
+    // The building's own inspection record — so the agent speaks accurately
+    // about THIS building's codes (and verifies any specifics via lookupViolationCode).
+    violationCodes: lead.violation_codes || "none on file",
+    violationDetails: lead.violation_details || "",
+    violationCount: lead.violation_count != null ? String(lead.violation_count) : "0",
+    lastInspectionDate: lead.last_inspection_date ?? "unknown",
   };
 }
 
 /**
- * Place a single outbound call for a lead. Enforces DNC + window unless
- * `force` (manual call-now still checks DNC, never the window override unless asked).
+ * Core dial primitive: create the call row, place the Vapi call, link them.
+ * Used by both `placeCall` (campaign/lead dialing) and `testCall` (ad-hoc, no
+ * lead row). Callers are responsible for DNC / calling-window guards first.
+ */
+async function dispatchCall(opts: {
+  phone: string;
+  variableValues: Record<string, string>;
+  metadata: Record<string, unknown>;
+  leadId?: string | null;
+  campaignId?: string | null;
+}): Promise<DialResult> {
+  assertOutbound();
+
+  // Create the call row first so the webhook can link events even if it races
+  // ahead of our response handling.
+  const { data: callRow, error: callErr } = await db()
+    .from("call")
+    .insert({
+      lead_id: opts.leadId ?? null,
+      campaign_id: opts.campaignId ?? null,
+      phone_number: opts.phone,
+      status: "queued",
+    })
+    .select("id")
+    .single();
+  if (callErr || !callRow) {
+    return { ok: false, reason: `could not create call row: ${callErr?.message}` };
+  }
+  const callRowId = callRow.id as string;
+
+  try {
+    const result = await vapiPost("/call", {
+      phoneNumberId: env.vapiPhoneNumberId,
+      assistantId: env.outboundAssistantId,
+      assistantOverrides: { variableValues: opts.variableValues },
+      customer: { number: opts.phone },
+      metadata: { ...opts.metadata, callRowId },
+    });
+
+    const vapiCallId = result.id;
+    await db()
+      .from("call")
+      .update({ vapi_call_id: vapiCallId, status: "ringing", started_at: new Date().toISOString() })
+      .eq("id", callRowId);
+
+    await recordEvent({
+      call_id: callRowId,
+      vapi_call_id: vapiCallId,
+      type: "status-update",
+      text: "dialing",
+      payload: { phone: opts.phone, kind: opts.metadata.kind ?? "outbound" },
+    });
+
+    log.info("Outbound call placed", { leadId: opts.leadId ?? null, vapiCallId, phone: opts.phone });
+    return { ok: true, vapiCallId, callRowId };
+  } catch (err) {
+    await db()
+      .from("call")
+      .update({ status: "ended", outcome: "failed", ended_reason: String(err), ended_at: new Date().toISOString() })
+      .eq("id", callRowId);
+    log.error("Outbound call failed to place", { leadId: opts.leadId ?? null, err: String(err) });
+    return { ok: false, reason: String(err), callRowId };
+  }
+}
+
+/**
+ * Place a single outbound call for a lead. Enforces DNC + calling window
+ * (manual call-now passes `ignoreWindow` but still checks DNC).
  */
 export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } = {}): Promise<DialResult> {
   assertOutbound();
@@ -84,37 +157,15 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     return { ok: false, reason: "outside calling window" };
   }
 
-  // Create the call row first so the webhook can link events even if it races
-  // ahead of our response handling.
-  const { data: callRow, error: callErr } = await db()
-    .from("call")
-    .insert({
-      lead_id: lead.id,
-      campaign_id: lead.campaign_id,
-      phone_number: phone,
-      status: "queued",
-    })
-    .select("id")
-    .single();
-  if (callErr || !callRow) {
-    return { ok: false, reason: `could not create call row: ${callErr?.message}` };
-  }
-  const callRowId = callRow.id as string;
+  const result = await dispatchCall({
+    phone,
+    variableValues: variableValuesFor(lead),
+    metadata: { leadId: lead.id, campaignId: lead.campaign_id, kind: "outbound" },
+    leadId: lead.id,
+    campaignId: lead.campaign_id,
+  });
 
-  try {
-    const result = await vapiPost("/call", {
-      phoneNumberId: env.vapiPhoneNumberId,
-      assistantId: env.outboundAssistantId,
-      assistantOverrides: { variableValues: variableValuesFor(lead) },
-      customer: { number: phone },
-      metadata: { leadId: lead.id, callRowId, campaignId: lead.campaign_id, kind: "outbound" },
-    });
-
-    const vapiCallId = result.id;
-    await db()
-      .from("call")
-      .update({ vapi_call_id: vapiCallId, status: "ringing", started_at: new Date().toISOString() })
-      .eq("id", callRowId);
+  if (result.ok) {
     await db()
       .from("lead")
       .update({
@@ -123,25 +174,9 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
         last_attempt_at: new Date().toISOString(),
       })
       .eq("id", lead.id);
-
-    await recordEvent({
-      call_id: callRowId,
-      vapi_call_id: vapiCallId,
-      type: "status-update",
-      text: "dialing",
-      payload: { phone },
-    });
-
-    log.info("Outbound call placed", { leadId: lead.id, vapiCallId, phone });
-    return { ok: true, vapiCallId, callRowId };
-  } catch (err) {
-    await db()
-      .from("call")
-      .update({ status: "ended", outcome: "failed", ended_reason: String(err), ended_at: new Date().toISOString() })
-      .eq("id", callRowId);
-    log.error("Outbound call failed to place", { leadId: lead.id, err: String(err) });
-    return { ok: false, reason: String(err), callRowId };
   }
+
+  return result;
 }
 
 /** Manual "call now" from the dashboard. Looks up the lead, then dials. */
@@ -150,6 +185,45 @@ export async function callNow(leadId: string): Promise<DialResult> {
   if (error || !lead) return { ok: false, reason: "lead not found" };
   // Manual dials ignore the calling window (operator's discretion) but still honor DNC.
   return placeCall(lead, { ignoreWindow: true });
+}
+
+/** Fields an operator can set when test-calling the agent at an arbitrary number. */
+export interface TestCallInput {
+  phone: string;
+  name?: string;
+  buildingName?: string;
+  address?: string;
+  city?: string;
+  problemType?: string;
+  violationCodes?: string;
+}
+
+/**
+ * Dial an arbitrary number to test the agent — no lead row required. Still
+ * honors DNC. The call appears in the live monitor (metadata.kind = "test").
+ */
+export async function testCall(input: TestCallInput): Promise<DialResult> {
+  assertOutbound();
+
+  const phone = toE164(input.phone) ?? input.phone.trim();
+  if (!phone) return { ok: false, reason: "no phone number provided" };
+  if (await isSuppressed(phone)) return { ok: false, reason: "number is suppressed (DNC)" };
+
+  const variableValues: Record<string, string> = {
+    contactName: input.name || "there",
+    buildingName: input.buildingName || "your building",
+    address: input.address || "",
+    city: input.city || "",
+    problemType: input.problemType || "an overdue inspection",
+    oemMatch: "unknown",
+    certExpiry: "unknown",
+    violationCodes: input.violationCodes || "none on file",
+    violationDetails: "",
+    violationCount: "0",
+    lastInspectionDate: "unknown",
+  };
+
+  return dispatchCall({ phone, variableValues, metadata: { kind: "test" } });
 }
 
 // --- Campaign worker -------------------------------------------------------

@@ -1,11 +1,21 @@
-# Axxiom Voice Agents — Inbound
+# Axxiom Voice Agents
 
-Inbound AI voice agent for Axxiom Elevator. Answers every call 24/7, triages
-**new leads vs. existing customers**, books site surveys, and hands off to a
-human when needed. Built on **Vapi** (Claude brain + ElevenLabs voice +
-Deepgram transcription); this repo is the **orchestration + integration layer**
-that Vapi calls — it owns the CRM logic (GoHighLevel) and the call log (Supabase
-→ Fabric).
+AI voice agents for Axxiom Elevator, built on **Vapi** (Deepgram transcription +
+**Claude** brain + **ElevenLabs** voice). This repo is the **orchestration +
+integration layer** that Vapi calls — it owns the CRM logic (GoHighLevel), the
+call log (Supabase → Fabric), and the outbound calling campaign. Two agents
+share one service: an **inbound** triage agent and an **outbound** qualification
+campaign.
+
+> 📚 **Full documentation lives in [`docs/`](docs/README.md)** — setup, the
+> inbound agent, outbound campaigns (regions, code lookup, sales handoff, test
+> calls), the API reference, the database schema, and compliance. This README is
+> the quick tour; `docs/` is the detail.
+
+## Inbound agent
+
+Answers every call 24/7, triages **new leads vs. existing customers**, books
+site surveys, and hands off to a human when needed.
 
 > Scope: customer inquiries + sales leads. **Not** an emergency dispatch line —
 > but it carries a safety net that hands trapped/injured callers straight to a
@@ -95,55 +105,67 @@ feature logs a warning until its keys are present.
 
 # Outbound Qualification Campaign
 
-A compliant outbound calling system that dials the CA elevator-violation leads
-(`data/axxiom_leads_CA_20260617.xlsx`, gitignored — contains lead PII), qualifies whether they want Axxiom's
-service, dispositions each lead (qualified / needs follow-up / not interested /
-remove), and is monitored live from a Next.js dashboard. Everything lives in a
-dedicated Supabase **`outbound` schema** (separate from inbound `ax_voice_call`).
+A compliant outbound calling system that dials elevator-violation leads
+**region by region** (imported from per-region xlsx workbooks kept in `data/`,
+gitignored — they contain lead PII), qualifies whether they want Axxiom's
+service, looks up violation **codes** accurately, dispositions each lead into
+**sales-ready** data, and is monitored live from a Next.js dashboard. Everything
+lives in a dedicated Supabase **`outbound` schema** (separate from inbound
+`ax_voice_call`).
+
+> See **[docs/outbound-campaigns.md](docs/outbound-campaigns.md)** for the full
+> workflow. Highlights: one campaign per region with a dashboard selector; a
+> `lookupViolationCode` tool backed by a curated `code_reference` table so the
+> agent never guesses codes; structured qualification columns for sales; and a
+> "Test the agent" form that dials any number.
 
 ## Outbound architecture
 
 ```
-Leads xlsx ─import─▶ outbound.lead
-Dialer/worker ─POST /call─▶ Vapi ─status/transcript/tools/end-of-call─▶ /vapi/webhook
+Leads xlsx ──import (per region)──▶ outbound.lead
+Worker / call-now / test-call ─POST /call─▶ Vapi ─status/transcript/tools/end-of-call─▶ /vapi/webhook
                                                        │
-                              outbound.call + call_event + lead disposition
+                  outbound.call + call_event + lead disposition + sales fields
                                                        │
-Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, export─ Hono API
+Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, test-call, export─ Hono API
 ```
 
 - **Outbound assistant** — `src/assistant/outbound/` (qualification prompt,
   compliant first-message disclosure, tools `qualifyLead`, `recordDisposition`,
-  `optOut`, `transferToHuman`).
+  `optOut`, `lookupViolationCode`, `transferToHuman`).
 - **Dialer + worker** — `src/outbound/dialer.ts` (Vapi `POST /call`, calling-window
-  + DNC guards, concurrency cap, manual "call now").
+  + DNC guards, concurrency cap, manual "call now", arbitrary-number test calls).
 - **Webhook handlers** — `src/outbound/handlers.ts` (branch outbound vs inbound,
-  persist status/transcript/tool-calls/end-of-call, set dispositions).
+  persist status/transcript/tool-calls/end-of-call, set dispositions + sales fields).
 - **API routes** — `src/outbound/routes.ts` (campaigns, stats, start/pause,
-  call-now, export to xlsx/csv).
-- **Dashboard** — `web/` (Next.js + Tailwind): live monitor, leads table,
-  campaign controls, export.
+  call-now, test-call, export to xlsx/csv).
+- **Dashboard** — `web/` (Next.js + Tailwind): region selector, live monitor,
+  leads table, campaign + test-call controls, export.
 
 ## Setup (outbound)
 
 1. **Schema** — run `scripts/sql/outbound_schema.sql` in Supabase. Then in the
    dashboard: enable Realtime for the `outbound` schema (Database → Replication)
    and expose it for the API (Settings → API → Exposed schemas).
-2. **Import leads** — `bun run import-leads` (defaults to the bundled workbook +
-   "Tier A - Campaign Ready" sheet; pass a path / `--sheet "Name"` to override).
-   Phones are normalized to E.164, deduped, and toll-free-only rows are flagged
-   `bad_number`.
-3. **Phone number** — set `VAPI_PHONE_NUMBER_ID` to the Vapi number that places
+2. **Import a region's leads** — `bun run import-leads <file.xlsx> --region "CA — Bay Area"`
+   (optionally `--sheet "Name"` / `--campaign "Name"`). Each region becomes its
+   own campaign. Phones are normalized to E.164, deduped, and toll-free-only rows
+   are flagged `bad_number`. Repeat per region.
+3. **Seed the code reference** — `bun run import-codes <codes.xlsx>` so
+   `lookupViolationCode` can verify codes. Until seeded it safely returns
+   "not found → the team will confirm." (See docs for expected columns.)
+4. **Phone number** — set `VAPI_PHONE_NUMBER_ID` to the Vapi number that places
    the outbound calls.
-4. **Assistant** — `bun run create-outbound-assistant`, then put the printed
+5. **Assistant** — `bun run create-outbound-assistant`, then put the printed
    `OUTBOUND_ASSISTANT_ID` in `.env`.
-5. **Dashboard** — in `web/`: `cp .env.local.example .env.local` (fill in
+6. **Dashboard** — in `web/`: `cp .env.local.example .env.local` (fill in
    `NEXT_PUBLIC_SUPABASE_URL`, the **anon** key, and `NEXT_PUBLIC_API_BASE`),
    then `npm install && npm run dev` (serves on `:3001`; the backend runs on `:3000`).
 
-Start/pause the campaign from the dashboard. The worker dials eligible leads
-(highest `lead_score` first) within the calling window, up to the concurrency
-cap and max attempts. "Call now" on any lead dials immediately (still DNC-checked).
+Pick a region and start/pause its campaign from the dashboard. The worker dials
+eligible leads (highest `lead_score` first) within the calling window, up to the
+concurrency cap and max attempts. "Call now" on any lead dials immediately, and
+the "Test the agent" card dials any number you enter — both still DNC-checked.
 
 ### No Bun installed? (Node fallback)
 

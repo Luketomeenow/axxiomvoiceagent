@@ -10,7 +10,27 @@ export const OUTBOUND_TOOL_NAMES = {
   qualifyLead: "qualifyLead",
   recordDisposition: "recordDisposition",
   optOut: "optOut",
+  lookupViolationCode: "lookupViolationCode",
 } as const;
+
+export const lookupViolationCodeTool = {
+  type: "function" as const,
+  function: {
+    name: OUTBOUND_TOOL_NAMES.lookupViolationCode,
+    description:
+      "Look up the official, verified meaning of an elevator inspection / violation code in our reference database. ALWAYS call this before explaining what a code means or confirming a code the caller mentions — never guess or invent code meanings. Returns the plain-English summary, severity, and typical remedy, or tells you it's not found (in which case say the team will confirm the details).",
+    parameters: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          description: "The code/citation to verify, e.g. '3.10.4' or 'A17.1 2.7.6'. Pass exactly what was said.",
+        },
+      },
+      required: ["code"],
+    },
+  },
+};
 
 export const qualifyLeadTool = {
   type: "function" as const,
@@ -100,7 +120,13 @@ export function endCallTool() {
 
 /** All outbound tools. transferCall is only added when a number is configured. */
 export function buildOutboundTools(): unknown[] {
-  const tools: unknown[] = [qualifyLeadTool, recordDispositionTool, optOutTool, endCallTool()];
+  const tools: unknown[] = [
+    qualifyLeadTool,
+    recordDispositionTool,
+    optOutTool,
+    lookupViolationCodeTool,
+    endCallTool(),
+  ];
   if (env.transferPhoneNumber) tools.push(transferToHumanTool());
   return tools;
 }

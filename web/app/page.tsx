@@ -6,9 +6,11 @@ import { StatsBar } from "@/components/StatsBar";
 import { LiveMonitor } from "@/components/LiveMonitor";
 import { LeadsTable } from "@/components/LeadsTable";
 import { ExportButtons } from "@/components/ExportButtons";
+import { TestAgentCard } from "@/components/TestAgentCard";
 
 export default function Page() {
   const [refreshKey, setRefreshKey] = useState(0);
+  const [campaignId, setCampaignId] = useState<string | null>(null);
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   return (
@@ -17,16 +19,17 @@ export default function Page() {
         <div>
           <h1 className="text-2xl font-bold">Axxiom — Outbound Qualification</h1>
           <p className="text-sm text-slate-400">
-            CA elevator-violation leads · live Vapi campaign · {`compliant disclosure + DNC enforced`}
+            Elevator-violation leads by region · live Vapi campaign · {`compliant disclosure + DNC enforced`}
           </p>
         </div>
       </header>
 
-      <CampaignControls onChange={refresh} />
-      <StatsBar refreshKey={refreshKey} />
+      <TestAgentCard />
+      <CampaignControls campaignId={campaignId} onSelect={setCampaignId} onChange={refresh} />
+      <StatsBar refreshKey={refreshKey} campaignId={campaignId} />
       <LiveMonitor />
-      <ExportButtons />
-      <LeadsTable onAction={refresh} />
+      <ExportButtons campaignId={campaignId} />
+      <LeadsTable onAction={refresh} campaignId={campaignId} />
     </main>
   );
 }

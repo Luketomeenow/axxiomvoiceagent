@@ -5,18 +5,24 @@ import { supabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
 import type { Campaign } from "@/lib/types";
 
-export function CampaignControls({ onChange }: { onChange: () => void }) {
-  const [campaign, setCampaign] = useState<Campaign | null>(null);
+export function CampaignControls({
+  campaignId,
+  onSelect,
+  onChange,
+}: {
+  campaignId: string | null;
+  onSelect: (id: string) => void;
+  onChange: () => void;
+}) {
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [busy, setBusy] = useState(false);
 
   async function load() {
-    const { data } = await supabase
-      .from("campaign")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    setCampaign((data as Campaign) ?? null);
+    const { data } = await supabase.from("campaign").select("*").order("created_at", { ascending: false });
+    const list = (data as Campaign[]) ?? [];
+    setCampaigns(list);
+    // Default to the most recent campaign (one campaign per region).
+    if (!campaignId && list.length) onSelect(list[0].id);
   }
 
   useEffect(() => {
@@ -28,7 +34,10 @@ export function CampaignControls({ onChange }: { onChange: () => void }) {
     return () => {
       supabase.removeChannel(ch);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const campaign = campaigns.find((c) => c.id === campaignId) ?? null;
 
   async function toggle() {
     if (!campaign) return;
@@ -48,8 +57,22 @@ export function CampaignControls({ onChange }: { onChange: () => void }) {
   return (
     <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 bg-panel p-4">
       <div>
-        <div className="text-sm text-slate-400">Campaign</div>
-        <div className="text-lg font-semibold">{campaign?.name ?? "No campaign found — import leads first"}</div>
+        <div className="text-sm text-slate-400">Region / campaign</div>
+        {campaigns.length ? (
+          <select
+            value={campaignId ?? ""}
+            onChange={(e) => onSelect(e.target.value)}
+            className="mt-1 rounded-lg border border-white/10 bg-ink px-3 py-1.5 text-lg font-semibold"
+          >
+            {campaigns.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.region ? `${c.region} — ${c.name}` : c.name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <div className="text-lg font-semibold">No campaign found — import leads first</div>
+        )}
         {campaign && (
           <div className="mt-1 text-xs text-slate-400">
             Window {campaign.call_window_start}:00–{campaign.call_window_end}:00 {campaign.timezone} · concurrency{" "}

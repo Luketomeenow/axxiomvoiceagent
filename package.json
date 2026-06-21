@@ -11,9 +11,11 @@
     "create-assistant": "bun run scripts/create-assistant.ts",
     "create-outbound-assistant": "bun run scripts/create-outbound-assistant.ts",
     "import-leads": "bun run scripts/import-leads.ts",
+    "import-codes": "bun run scripts/import-codes.ts",
     "create-assistant:node": "node --env-file=.env --import tsx scripts/create-assistant.ts",
     "create-outbound-assistant:node": "node --env-file=.env --import tsx scripts/create-outbound-assistant.ts",
     "import-leads:node": "node --env-file=.env --import tsx scripts/import-leads.ts",
+    "import-codes:node": "node --env-file=.env --import tsx scripts/import-codes.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
