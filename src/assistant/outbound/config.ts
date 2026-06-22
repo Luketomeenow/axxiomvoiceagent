@@ -51,14 +51,17 @@ export function buildOutboundAssistantConfig() {
       waitSeconds: 0.6,
       smartEndpointingPlan: { provider: "livekit" },
     },
-    // Don't cut the agent off on short backchannel ("uh huh", "okay").
+    // Require a couple of words before the agent yields, so background noise /
+    // short backchannel ("uh huh") doesn't constantly cut it off.
     stopSpeakingPlan: {
-      numWords: 0,
-      voiceSeconds: 0.2,
+      numWords: 2,
+      voiceSeconds: 0.3,
       backoffSeconds: 1,
     },
     // Outbound should sound clean and clearly disclosed, not like a call center.
     backgroundSound: "off",
+    // Filter ambient noise so the transcriber + endpointing behave on real calls.
+    backgroundDenoisingEnabled: true,
 
     server: webhookUrl
       ? { url: webhookUrl, secret: env.vapiServerSecret || undefined }
@@ -67,11 +70,11 @@ export function buildOutboundAssistantConfig() {
     serverMessages: ["tool-calls", "end-of-call-report", "status-update", "transcript"],
 
     maxDurationSeconds: 480,
-    silenceTimeoutSeconds: 20,
-    // Detect voicemail so the dialer can disposition + retry instead of pitching a machine.
-    voicemailDetection: {
-      provider: "vapi",
-    },
+    silenceTimeoutSeconds: 30,
+    // Detect voicemail so the dialer can disposition + retry instead of pitching a
+    // machine — but it false-positives on live humans, so it's off for testing
+    // (ENABLE_VOICEMAIL_DETECTION). `null` clears any existing setting on PATCH.
+    voicemailDetection: env.enableVoicemailDetection ? { provider: "vapi" } : null,
     voicemailMessage:
       "Hi, this is a call from Axxiom Elevator about the elevator inspection at your building. We'll try you again, or you can reach our team during business hours. Thank you.",
     endCallMessage: "Thanks so much for your time — take care.",

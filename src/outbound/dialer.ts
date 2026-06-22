@@ -13,7 +13,7 @@
 
 import { assertOutbound, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
-import { db, isSuppressed, recordEvent, type LeadRow } from "./db.ts";
+import { checkSuppression, db, recordEvent, type LeadRow } from "./db.ts";
 import { toE164 } from "./phone.ts";
 
 const VAPI_API = "https://api.vapi.ai";
@@ -112,9 +112,18 @@ async function dispatchCall(opts: {
     });
 
     const vapiCallId = result.id;
+    // Vapi returns a per-call `monitor.controlUrl` we can POST to in order to
+    // end (or otherwise control) the live call from the dashboard.
+    const controlUrl =
+      (result.monitor as { controlUrl?: string } | undefined)?.controlUrl ?? null;
     await db()
       .from("call")
-      .update({ vapi_call_id: vapiCallId, status: "ringing", started_at: new Date().toISOString() })
+      .update({
+        vapi_call_id: vapiCallId,
+        control_url: controlUrl,
+        status: "ringing",
+        started_at: new Date().toISOString(),
+      })
       .eq("id", callRowId);
 
     await recordEvent({
@@ -148,7 +157,12 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
   if (!phone) return { ok: false, reason: "no dialable phone" };
   if (lead.dnc) return { ok: false, reason: "lead is on DNC" };
 
-  if (await isSuppressed(phone)) {
+  const sup = await checkSuppression(phone);
+  if (sup.suppressed) {
+    if (sup.reason === "lookup_error") {
+      // Don't poison the lead as DNC for a connectivity/config problem.
+      return { ok: false, reason: `DNC check failed (Supabase error): ${sup.error}` };
+    }
     await db().from("lead").update({ dnc: true, disposition: "dnc" }).eq("id", lead.id);
     return { ok: false, reason: "number is suppressed (DNC)" };
   }
@@ -187,6 +201,59 @@ export async function callNow(leadId: string): Promise<DialResult> {
   return placeCall(lead, { ignoreWindow: true });
 }
 
+/**
+ * End an in-flight call from the dashboard. Uses Vapi's per-call control URL
+ * (captured at dispatch). Falls back to a clear reason if it isn't available
+ * (e.g. the call predates this feature or already ended).
+ */
+export async function endCall(callRowId: string): Promise<DialResult> {
+  assertOutbound();
+
+  const { data: call } = await db()
+    .from("call")
+    .select("id, control_url, vapi_call_id, status")
+    .eq("id", callRowId)
+    .maybeSingle();
+  if (!call) return { ok: false, reason: "call not found" };
+  if (call.status === "ended") return { ok: false, reason: "call already ended" };
+
+  const controlUrl = call.control_url as string | null;
+  if (!controlUrl) return { ok: false, reason: "no control URL for this call — cannot end remotely" };
+
+  try {
+    const res = await fetch(controlUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "end-call" }),
+      // Bound the request so a hung control URL can't stall the API server.
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      // 4xx/5xx usually means the call already ended (nothing to route to);
+      // treat it as effectively ended so the dashboard can move on.
+      throw new Error(`control ${res.status}: ${text}`);
+    }
+  } catch (err) {
+    const reason =
+      err instanceof Error && err.name === "TimeoutError"
+        ? "end-call timed out contacting Vapi (call may have already ended)"
+        : String(err);
+    log.error("End-call failed", { callRowId, err: reason });
+    return { ok: false, reason, callRowId };
+  }
+
+  await recordEvent({
+    call_id: callRowId,
+    vapi_call_id: (call.vapi_call_id as string) ?? undefined,
+    type: "status-update",
+    text: "ended by operator",
+    payload: { source: "dashboard" },
+  });
+  log.info("Call ended by operator", { callRowId });
+  return { ok: true, callRowId };
+}
+
 /** Fields an operator can set when test-calling the agent at an arbitrary number. */
 export interface TestCallInput {
   phone: string;
@@ -207,7 +274,13 @@ export async function testCall(input: TestCallInput): Promise<DialResult> {
 
   const phone = toE164(input.phone) ?? input.phone.trim();
   if (!phone) return { ok: false, reason: "no phone number provided" };
-  if (await isSuppressed(phone)) return { ok: false, reason: "number is suppressed (DNC)" };
+  const sup = await checkSuppression(phone);
+  if (sup.suppressed) {
+    if (sup.reason === "lookup_error") {
+      return { ok: false, reason: `DNC check failed (Supabase error): ${sup.error}` };
+    }
+    return { ok: false, reason: "number is suppressed (DNC)" };
+  }
 
   const variableValues: Record<string, string> = {
     contactName: input.name || "there",

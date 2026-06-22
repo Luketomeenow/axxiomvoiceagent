@@ -14,7 +14,7 @@ import { cors } from "hono/cors";
 import * as XLSX from "xlsx";
 
 import { log } from "../lib/logger.ts";
-import { callNow, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
+import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
 import { db } from "./db.ts";
 
 export const outbound = new Hono();
@@ -64,6 +64,14 @@ outbound.post("/outbound/campaign/pause", async (c) => {
 outbound.post("/outbound/call-now/:leadId", async (c) => {
   const leadId = c.req.param("leadId");
   const result = await callNow(leadId);
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// End an in-flight call from the dashboard.
+outbound.post("/outbound/calls/:id/end", async (c) => {
+  const id = c.req.param("id");
+  const result = await endCall(id);
+  log.info("End-call requested", { callId: id, ok: result.ok });
   return c.json(result, result.ok ? 200 : 400);
 });
 

@@ -16,6 +16,8 @@
     "create-outbound-assistant:node": "node --env-file=.env --import tsx scripts/create-outbound-assistant.ts",
     "import-leads:node": "node --env-file=.env --import tsx scripts/import-leads.ts",
     "import-codes:node": "node --env-file=.env --import tsx scripts/import-codes.ts",
+    "check-db": "bun run scripts/check-outbound-db.ts",
+    "check-db:node": "node --env-file=.env --import tsx scripts/check-outbound-db.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

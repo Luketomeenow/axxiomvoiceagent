@@ -101,15 +101,30 @@ export interface CallRow {
 
 // --- Helpers ---------------------------------------------------------------
 
-/** True if a number is on the suppression list. Fails closed (suppress) on error. */
-export async function isSuppressed(phone: string): Promise<boolean> {
-  if (!phone) return true;
+export type SuppressionCheck =
+  | { suppressed: false; reason: "clear" }
+  | { suppressed: true; reason: "empty" | "listed" | "lookup_error"; error?: string };
+
+/**
+ * Check whether a number is on the suppression list.
+ *
+ * Fails closed (suppress) on error for compliance, BUT distinguishes a real
+ * DNC hit (`listed`) from a Supabase/connectivity problem (`lookup_error`) so
+ * callers can surface an actionable reason instead of a misleading "DNC".
+ */
+export async function checkSuppression(phone: string): Promise<SuppressionCheck> {
+  if (!phone) return { suppressed: true, reason: "empty" };
   const { data, error } = await db().from("dnc_suppression").select("phone").eq("phone", phone).maybeSingle();
   if (error) {
     log.warn("DNC lookup failed — suppressing to be safe", { phone, error: error.message });
-    return true;
+    return { suppressed: true, reason: "lookup_error", error: error.message };
   }
-  return !!data;
+  return data ? { suppressed: true, reason: "listed" } : { suppressed: false, reason: "clear" };
+}
+
+/** True if a number is on the suppression list. Fails closed (suppress) on error. */
+export async function isSuppressed(phone: string): Promise<boolean> {
+  return (await checkSuppression(phone)).suppressed;
 }
 
 /** Add a number to the suppression list and mark its lead as DNC. */

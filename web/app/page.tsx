@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { CampaignControls } from "@/components/CampaignControls";
 import { StatsBar } from "@/components/StatsBar";
 import { LiveMonitor } from "@/components/LiveMonitor";
+import { RecentCalls } from "@/components/RecentCalls";
 import { LeadsTable } from "@/components/LeadsTable";
 import { ExportButtons } from "@/components/ExportButtons";
 import { TestAgentCard } from "@/components/TestAgentCard";
@@ -28,6 +29,7 @@ export default function Page() {
       <CampaignControls campaignId={campaignId} onSelect={setCampaignId} onChange={refresh} />
       <StatsBar refreshKey={refreshKey} campaignId={campaignId} />
       <LiveMonitor />
+      <RecentCalls />
       <ExportButtons campaignId={campaignId} />
       <LeadsTable onAction={refresh} campaignId={campaignId} />
     </main>

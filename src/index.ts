@@ -121,4 +121,6 @@ if (env.supabaseUrl && env.supabaseServiceRoleKey && env.outboundAssistantId) {
 export default {
   port: env.port,
   fetch: app.fetch,
+  // Default is 10s; give outbound control calls (e.g. end-call) more headroom.
+  idleTimeout: 30,
 };

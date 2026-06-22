@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import type { Call, CallEvent } from "@/lib/types";
 
 /**
@@ -11,14 +12,35 @@ import type { Call, CallEvent } from "@/lib/types";
 export function LiveMonitor() {
   const [activeCalls, setActiveCalls] = useState<Call[]>([]);
   const [events, setEvents] = useState<Record<string, CallEvent[]>>({});
+  const [ending, setEnding] = useState<Record<string, boolean>>({});
   const eventsRef = useRef(events);
   eventsRef.current = events;
 
+  async function handleEnd(callId: string) {
+    setEnding((m) => ({ ...m, [callId]: true }));
+    try {
+      const res = await api.endCall(callId);
+      if (!res?.ok) {
+        // Surface the reason but keep the row; status will flip via Realtime if it ends.
+        console.warn("End call failed:", res?.reason);
+        alert(`Could not end call: ${res?.reason ?? "unknown error"}`);
+      }
+    } catch (err) {
+      alert(`Could not end call: ${String(err)}`);
+    } finally {
+      setEnding((m) => ({ ...m, [callId]: false }));
+    }
+  }
+
   async function loadActive() {
+    // Only consider calls started recently. Without webhooks a dead call can be
+    // left "ringing" forever; this keeps the monitor honest even if one slips through.
+    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const { data } = await supabase
       .from("call")
       .select("*")
       .in("status", ["queued", "ringing", "in-progress"])
+      .gte("created_at", cutoff)
       .order("created_at", { ascending: false });
     setActiveCalls((data as Call[]) ?? []);
   }
@@ -56,9 +78,20 @@ export function LiveMonitor() {
         <div className="grid gap-4 md:grid-cols-2">
           {activeCalls.map((call) => (
             <div key={call.id} className="rounded-lg border border-white/10 bg-ink/60 p-3">
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-mono text-sm">{call.phone_number}</span>
-                <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-200">{call.status}</span>
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-200">
+                    {call.status}
+                  </span>
+                  <button
+                    onClick={() => handleEnd(call.id)}
+                    disabled={ending[call.id]}
+                    className="rounded-md bg-red-500/90 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                  >
+                    {ending[call.id] ? "Ending…" : "End call"}
+                  </button>
+                </div>
               </div>
               <div className="h-44 space-y-1 overflow-y-auto text-sm">
                 {(events[call.id] ?? [])

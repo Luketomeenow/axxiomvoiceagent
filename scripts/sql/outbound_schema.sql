@@ -204,6 +204,10 @@ exception when duplicate_object then null; end $$;
 -- and structured sales-ready qualification fields.
 -- ===========================================================================
 
+-- Live call control: Vapi's per-call control URL, used to end a call remotely
+-- from the dashboard ("End call" button).
+alter table outbound.call add column if not exists control_url text;
+
 -- Region tagging: one campaign per region, region stamped on every lead.
 alter table outbound.campaign add column if not exists region text;
 alter table outbound.lead     add column if not exists region text;
@@ -241,3 +245,29 @@ do $$
 begin
   create policy "dashboard read code_reference" on outbound.code_reference for select using (true);
 exception when duplicate_object then null; end $$;
+
+-- ===========================================================================
+-- API role grants — REQUIRED for PostgREST / supabase-js to reach this schema.
+--
+-- Two things are needed for the REST API to serve the `outbound` schema:
+--   1) These grants (run as part of this SQL), AND
+--   2) Adding `outbound` to Supabase -> Project Settings -> API ->
+--      "Exposed schemas". Without (2) every query fails with
+--      "Invalid schema: outbound" and the dialer fail-closes every number as DNC.
+-- ===========================================================================
+grant usage on schema outbound to anon, authenticated, service_role;
+
+-- service_role (backend dialer/webhooks) needs full DML; anon/authenticated
+-- (dashboard) get read access, gated by the RLS select policies above.
+grant all privileges on all tables    in schema outbound to service_role;
+grant all privileges on all sequences in schema outbound to service_role;
+grant all privileges on all functions in schema outbound to service_role;
+grant select on all tables in schema outbound to anon, authenticated;
+
+-- Apply the same defaults to any tables/sequences created later.
+alter default privileges in schema outbound
+  grant all privileges on tables to service_role;
+alter default privileges in schema outbound
+  grant all privileges on sequences to service_role;
+alter default privileges in schema outbound
+  grant select on tables to anon, authenticated;

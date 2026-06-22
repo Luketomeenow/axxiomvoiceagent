@@ -54,6 +54,7 @@ export interface Call {
   outcome: string | null;
   disposition: string | null;
   summary: string | null;
+  transcript: string | null;
   duration_seconds: number | null;
   recording_url: string | null;
   started_at: string | null;

@@ -43,6 +43,9 @@ export const env = {
   outboundLeadTable: str("OUTBOUND_LEAD_TABLE", "lead"),
   outboundCallTable: str("OUTBOUND_CALL_TABLE", "call"),
   outboundSchema: str("OUTBOUND_SCHEMA", "outbound"),
+  // Voicemail detection misclassifies live humans (esp. with background noise)
+  // and hangs up. Off by default so test calls don't drop; enable for the campaign.
+  enableVoicemailDetection: bool("ENABLE_VOICEMAIL_DETECTION", false),
 
   // GoHighLevel
   ghlAccessToken: str("GHL_ACCESS_TOKEN") || str("GHL_API_KEY"),
