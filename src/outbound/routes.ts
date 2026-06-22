@@ -9,13 +9,14 @@
  *   GET  /outbound/export             download leads as csv/xlsx by disposition
  */
 
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import * as XLSX from "xlsx";
 
 import { log } from "../lib/logger.ts";
 import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
 import { db } from "./db.ts";
+import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 
 export const outbound = new Hono();
 
@@ -82,6 +83,51 @@ outbound.post("/outbound/test-call", async (c) => {
   const result = await testCall(body);
   log.info("Test call requested", { phone: body.phone, ok: result.ok });
   return c.json(result, result.ok ? 200 : 400);
+});
+
+// --- Lead import (dashboard upload) ---------------------------------------
+
+async function readUpload(c: Context): Promise<Uint8Array | null> {
+  const body = await c.req.parseBody();
+  const file = body["file"];
+  if (!file || typeof file === "string") return null;
+  const ab = await (file as File).arrayBuffer();
+  return new Uint8Array(ab);
+}
+
+// Inspect an uploaded workbook: list its sheets + row counts, and suggest the
+// campaign-ready sheet so the UI can preselect it.
+outbound.post("/outbound/import/preview", async (c) => {
+  try {
+    const bytes = await readUpload(c);
+    if (!bytes) return c.json({ error: "no file uploaded (field 'file')" }, 400);
+    const sheets = listSheets(bytes);
+    return c.json({ sheets, suggested: guessCampaignReadySheet(sheets) ?? null });
+  } catch (err) {
+    log.error("Import preview failed", { err: String(err) });
+    return c.json({ error: `could not read workbook: ${String(err)}` }, 400);
+  }
+});
+
+// Import the chosen sheet of leads into a campaign.
+outbound.post("/outbound/import", async (c) => {
+  try {
+    const body = await c.req.parseBody();
+    const file = body["file"];
+    if (!file || typeof file === "string") return c.json({ error: "no file uploaded (field 'file')" }, 400);
+    const sheetName = String(body["sheet"] ?? "").trim();
+    if (!sheetName) return c.json({ error: "sheet is required" }, 400);
+    const region = (String(body["region"] ?? "").trim() || null) as string | null;
+    const campaignName = (String(body["campaign"] ?? "").trim() || null) as string | null;
+
+    const ab = await (file as File).arrayBuffer();
+    const result = await importLeads({ bytes: new Uint8Array(ab), sheetName, region, campaignName });
+    log.info("Leads imported via dashboard", { ...result });
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    log.error("Import failed", { err: String(err) });
+    return c.json({ ok: false, error: String(err) }, 400);
+  }
 });
 
 const EXPORT_COLUMNS = [

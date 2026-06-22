@@ -2,6 +2,7 @@
 
 import { useCallback, useState } from "react";
 import { CampaignControls } from "@/components/CampaignControls";
+import { ImportLeadsCard } from "@/components/ImportLeadsCard";
 import { StatsBar } from "@/components/StatsBar";
 import { LiveMonitor } from "@/components/LiveMonitor";
 import { RecentCalls } from "@/components/RecentCalls";
@@ -26,6 +27,12 @@ export default function Page() {
       </header>
 
       <TestAgentCard />
+      <ImportLeadsCard
+        onImported={(id) => {
+          if (id) setCampaignId(id);
+          refresh();
+        }}
+      />
       <CampaignControls campaignId={campaignId} onSelect={setCampaignId} onChange={refresh} />
       <StatsBar refreshKey={refreshKey} campaignId={campaignId} />
       <LiveMonitor />

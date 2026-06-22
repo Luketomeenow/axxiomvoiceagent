@@ -9,6 +9,29 @@ async function post(path: string, body?: unknown) {
   return res.json();
 }
 
+async function postForm(path: string, form: FormData) {
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: form });
+  return res.json();
+}
+
+export interface SheetInfo {
+  name: string;
+  rows: number;
+}
+
+export interface ImportResult {
+  ok?: boolean;
+  error?: string;
+  campaignId?: string | null;
+  campaignName?: string;
+  sheet?: string;
+  totalRows?: number;
+  prepared?: number;
+  imported?: number;
+  deduped?: number;
+  badNumbers?: number;
+}
+
 export interface TestCallBody {
   phone: string;
   name?: string;
@@ -25,6 +48,19 @@ export const api = {
   callNow: (leadId: string) => post(`/outbound/call-now/${leadId}`),
   endCall: (callId: string) => post(`/outbound/calls/${callId}/end`),
   testCall: (body: TestCallBody) => post("/outbound/test-call", body),
+  importPreview: (file: File): Promise<{ sheets?: SheetInfo[]; suggested?: string | null; error?: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    return postForm("/outbound/import/preview", form);
+  },
+  importLeads: (file: File, opts: { sheet: string; region?: string; campaign?: string }): Promise<ImportResult> => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("sheet", opts.sheet);
+    if (opts.region) form.append("region", opts.region);
+    if (opts.campaign) form.append("campaign", opts.campaign);
+    return postForm("/outbound/import", form);
+  },
   exportUrl: (disposition: string | "all", format: "csv" | "xlsx", campaignId?: string | null) => {
     const q = new URLSearchParams({ format });
     if (disposition !== "all") q.set("disposition", disposition);
