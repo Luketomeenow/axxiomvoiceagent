@@ -16,6 +16,8 @@ export function CampaignControls({
 }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [editName, setEditName] = useState("");
 
   async function load() {
     const { data } = await supabase.from("campaign").select("*").order("created_at", { ascending: false });
@@ -52,13 +54,79 @@ export function CampaignControls({
     }
   }
 
+  function startEdit() {
+    if (!campaign) return;
+    setEditName(campaign.name);
+    setEditing(true);
+  }
+
+  async function saveName() {
+    if (!campaign || !editName.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api.updateCampaign(campaign.id, { name: editName.trim() });
+      if (r && r.ok === false) {
+        alert(`Could not rename: ${r.error ?? "unknown error"}`);
+        return;
+      }
+      setEditing(false);
+      await load();
+      onChange();
+    } catch (e) {
+      alert(`Could not rename — is the backend deployed with the latest routes?\n${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove() {
+    if (!campaign) return;
+    if (!confirm(`Delete campaign "${campaign.name}"?\n\nThis permanently removes the campaign and all of its leads and call history. This cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      const r = await api.deleteCampaign(campaign.id);
+      if (r && r.ok === false) {
+        alert(`Could not delete: ${r.error ?? "unknown error"}`);
+        return;
+      }
+      setEditing(false);
+      const remaining = campaigns.filter((c) => c.id !== campaign.id);
+      onSelect(remaining[0]?.id ?? "");
+      await load();
+      onChange();
+    } catch (e) {
+      alert(`Could not delete — is the backend deployed with the latest routes?\n${String(e)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const running = campaign?.status === "running";
 
   return (
     <div className="card card-pad flex flex-wrap items-center justify-between gap-4">
       <div>
         <div className="label">Region / campaign</div>
-        {campaigns.length ? (
+        {editing && campaign ? (
+          <div className="mt-1 flex items-center gap-2">
+            <input
+              autoFocus
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") saveName();
+                if (e.key === "Escape") setEditing(false);
+              }}
+              className="rounded-lg border border-white/10 bg-ink px-3 py-1.5 text-lg font-semibold outline-none focus:border-sky-500/60"
+            />
+            <button onClick={saveName} disabled={busy || !editName.trim()} className="btn btn-primary btn-xs">
+              Save
+            </button>
+            <button onClick={() => setEditing(false)} disabled={busy} className="btn btn-ghost btn-xs">
+              Cancel
+            </button>
+          </div>
+        ) : campaigns.length ? (
           <select
             value={campaignId ?? ""}
             onChange={(e) => onSelect(e.target.value)}
@@ -73,10 +141,18 @@ export function CampaignControls({
         ) : (
           <div className="text-lg font-semibold">No campaign found — import leads first</div>
         )}
-        {campaign && (
-          <div className="mt-1 text-xs text-slate-400">
-            Window {campaign.call_window_start}:00–{campaign.call_window_end}:00 {campaign.timezone} · concurrency{" "}
-            {campaign.max_concurrent} · max {campaign.max_attempts} attempts
+        {campaign && !editing && (
+          <div className="mt-1 flex items-center gap-3 text-xs text-slate-400">
+            <span>
+              Window {campaign.call_window_start}:00–{campaign.call_window_end}:00 {campaign.timezone} · concurrency{" "}
+              {campaign.max_concurrent} · max {campaign.max_attempts} attempts
+            </span>
+            <button onClick={startEdit} disabled={busy} className="text-sky-400 hover:text-sky-300">
+              Rename
+            </button>
+            <button onClick={remove} disabled={busy} className="text-rose-400 hover:text-rose-300">
+              Delete
+            </button>
           </div>
         )}
       </div>

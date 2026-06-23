@@ -9,6 +9,7 @@
 
 import { env } from "../../config/env.ts";
 import {
+  buildIdleHooks,
   buildStartSpeakingPlan,
   buildStopSpeakingPlan,
   buildTranscriber,
@@ -42,6 +43,8 @@ export function buildOutboundAssistantConfig() {
     transcriber: buildTranscriber(),
     startSpeakingPlan: buildStartSpeakingPlan(),
     stopSpeakingPlan: buildStopSpeakingPlan(),
+    // Check in if the caller goes quiet (e.g. on hold), then end gracefully.
+    hooks: buildIdleHooks(),
 
     // Outbound should sound clean and clearly disclosed, not like a call center.
     backgroundSound: "off",

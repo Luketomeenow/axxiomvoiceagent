@@ -8,6 +8,7 @@
 
 import { env } from "../config/env.ts";
 import {
+  buildIdleHooks,
   buildStartSpeakingPlan,
   buildStopSpeakingPlan,
   buildTranscriber,
@@ -40,6 +41,8 @@ export function buildAssistantConfig() {
     transcriber: buildTranscriber(),
     startSpeakingPlan: buildStartSpeakingPlan(),
     stopSpeakingPlan: buildStopSpeakingPlan(),
+    // Check in if the caller goes quiet, then end gracefully after 3 tries.
+    hooks: buildIdleHooks(),
 
     // Where Vapi sends tool-calls + end-of-call reports.
     server: webhookUrl

@@ -4,6 +4,8 @@
  *   GET  /outbound/stats              disposition breakdown
  *   POST /outbound/campaign/start     mark a campaign running + start the worker
  *   POST /outbound/campaign/pause     pause campaigns + stop the worker
+ *   POST /outbound/campaign/:id/update   rename / re-region a campaign
+ *   POST /outbound/campaign/:id/delete   delete a campaign + its leads
  *   POST /outbound/call-now/:leadId   manually dial one lead
  *   POST /outbound/test-call          dial an arbitrary number to test the agent
  *   GET  /outbound/export             download leads as csv/xlsx by disposition
@@ -79,6 +81,33 @@ outbound.post("/outbound/campaign/pause", async (c) => {
   stopCampaignWorker();
   log.info("Campaign paused", { campaignId: body.campaignId ?? "all" });
   return c.json({ ok: true, status: "paused" });
+});
+
+// Rename / re-region a campaign.
+outbound.post("/outbound/campaign/:id/update", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ name?: string; region?: string }>().catch(() => ({}) as { name?: string; region?: string });
+  const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
+  if (typeof body.region === "string") patch.region = body.region.trim() || null;
+  if (!("name" in patch) && !("region" in patch)) return c.json({ ok: false, error: "nothing to update" }, 400);
+  const { data, error } = await db().from("campaign").update(patch).eq("id", id).select("*").maybeSingle();
+  if (error) return c.json({ ok: false, error: error.message }, 500);
+  if (!data) return c.json({ ok: false, error: "campaign not found" }, 404);
+  log.info("Campaign updated", { campaignId: id, patch });
+  return c.json({ ok: true, campaign: data });
+});
+
+// Delete a campaign and all of its leads (calls/events cascade off the leads).
+outbound.post("/outbound/campaign/:id/delete", async (c) => {
+  const id = c.req.param("id");
+  // Delete leads first; outbound.call (and call_event) cascade off lead_id.
+  const { error: leadErr } = await db().from("lead").delete().eq("campaign_id", id);
+  if (leadErr) return c.json({ ok: false, error: leadErr.message }, 500);
+  const { error } = await db().from("campaign").delete().eq("id", id);
+  if (error) return c.json({ ok: false, error: error.message }, 500);
+  log.info("Campaign deleted", { campaignId: id });
+  return c.json({ ok: true });
 });
 
 outbound.post("/outbound/call-now/:leadId", async (c) => {
