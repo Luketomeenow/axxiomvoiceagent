@@ -28,6 +28,25 @@ outbound.get("/outbound/campaigns", async (c) => {
   return c.json({ campaigns: data ?? [] });
 });
 
+// Distinct servicing brands present in the leads (for the export brand picker),
+// each with a lead count. Optionally scoped to one campaign.
+outbound.get("/outbound/brands", async (c) => {
+  const campaignId = c.req.query("campaignId");
+  let q = db().from("lead").select("servicing_brand");
+  if (campaignId) q = q.eq("campaign_id", campaignId);
+  const { data, error } = await q;
+  if (error) return c.json({ error: error.message }, 500);
+  const counts = new Map<string, number>();
+  for (const row of data ?? []) {
+    const brand = (row as { servicing_brand: string | null }).servicing_brand?.trim();
+    if (brand) counts.set(brand, (counts.get(brand) ?? 0) + 1);
+  }
+  const brands = [...counts.entries()]
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return c.json({ brands, total: data?.length ?? 0 });
+});
+
 outbound.get("/outbound/stats", async (c) => {
   const campaignId = c.req.query("campaignId");
   let q = db().from("lead").select("disposition");
@@ -137,6 +156,7 @@ const EXPORT_COLUMNS = [
   "state",
   "zip",
   "region",
+  "servicing_brand",
   "contact_name",
   "contact_title",
   "contact_phone",
@@ -164,10 +184,16 @@ const EXPORT_COLUMNS = [
 outbound.get("/outbound/export", async (c) => {
   const disposition = c.req.query("disposition"); // e.g. "qualified"; omit for all
   const campaignId = c.req.query("campaignId"); // scope to one region/campaign
+  const brand = c.req.query("brand"); // scope to one servicing brand; omit for all
   const format = (c.req.query("format") || "xlsx").toLowerCase();
 
   let query = db().from("lead").select(EXPORT_COLUMNS.join(","));
   if (campaignId) query = query.eq("campaign_id", campaignId);
+  if (brand) {
+    // Allow comma-separated brands, e.g. ?brand=AmeriTex,AmeriTex West
+    const list = brand.split(",").map((s) => s.trim()).filter(Boolean);
+    query = list.length > 1 ? query.in("servicing_brand", list) : query.eq("servicing_brand", list[0]);
+  }
   if (disposition) {
     // Allow comma-separated dispositions, e.g. ?disposition=qualified,needs_followup
     const list = disposition.split(",").map((s) => s.trim()).filter(Boolean);
@@ -179,7 +205,9 @@ outbound.get("/outbound/export", async (c) => {
   const rows = (data ?? []) as unknown as Record<string, unknown>[];
   const worksheet = XLSX.utils.json_to_sheet(rows, { header: EXPORT_COLUMNS as unknown as string[] });
   const stamp = new Date().toISOString().slice(0, 10);
-  const base = `axxiom_leads_${disposition ?? "all"}_${stamp}`;
+  const slug = (s: string) => s.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();
+  const brandPart = brand ? `${slug(brand)}_` : "";
+  const base = `axxiom_leads_${brandPart}${disposition ?? "all"}_${stamp}`;
 
   if (format === "csv") {
     const csv = XLSX.utils.sheet_to_csv(worksheet);

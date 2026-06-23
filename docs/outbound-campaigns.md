@@ -44,27 +44,32 @@ The calling window, concurrency, and max attempts come from the campaign row (fa
 
 ---
 
-## 2. Code accuracy — search & verify
+## 2. Accuracy & value — what's wrong with their elevator
 
-The agent must be **accurate about elevator inspection / violation codes** and never invent what a code means. Two mechanisms:
+The agent's job is to **lead with value**: tell the prospect, accurately, what the public record shows about their building — then offer help. It must never invent specifics.
 
-### (a) The lead's own record is spoken accurately
+> **What the leads actually contain:** these leads are flagged by an **overdue State inspection and/or an expired permit (certificate of operation)** — *not* by specific cited code violations. In the current workbook the `violation_codes` / `violation_details` columns are empty. So the truthful, valuable hook is the **overdue/expired status with the real dates**, and any specific deficiencies are framed as "what the free survey identifies."
 
-Each call injects the building's real inspection data into the prompt via Vapi `variableValues` (set in `src/outbound/dialer.ts`): `{{violationCodes}}`, `{{violationCount}}`, `{{violationDetails}}`, `{{lastInspectionDate}}` (plus `{{buildingName}}`, `{{problemType}}`, `{{oemMatch}}`, `{{certExpiry}}`). The agent refers only to the code(s) on file for *that* building.
+### (a) The verified status is spoken first
 
-### (b) A verified lookup tool
+Each call injects the building's real compliance status into the prompt via Vapi `variableValues` (computed in `src/outbound/dialer.ts` → `variableValuesFor`): `{{humanProblem}}` (e.g. "an overdue State elevator inspection"), `{{lastInspectionDate}}`, `{{certStatus}}` (e.g. "the certificate of operation on file expired on 2025-05-02"), plus `{{buildingName}}`/`{{address}}`/`{{city}}`/`{{oemMatch}}`. The agent opens with this — accurate, from public records. `{{violationCodes}}` is only referenced when non-empty (i.e. once you have per-building citations).
 
-The agent has a `lookupViolationCode` tool. Before explaining what any code means — or confirming a code the caller cites — it calls the tool, which reads **only** from the curated `outbound.code_reference` table and returns the official `plain_summary` / `severity` / `typical_remedy`. If the code isn't found, the tool tells the agent to say the team will confirm — it never guesses. Every lookup is written to `call_event` for audit.
+### (b) A verified knowledge base for "what does that mean?"
 
-### Seed the code reference
+The agent has a `lookupViolationCode` tool covering **compliance topics** (`overdue inspection`, `expired permit`, `permit to operate`, …) **and** specific code sections. Before explaining what any of these means — or confirming a code a caller cites — it calls the tool, which reads **only** from the curated `outbound.code_reference` table and returns the verified `plain_summary` / `severity` / `typical_remedy`. If it's not found, the agent says the team will confirm — it never guesses. Every lookup is logged to `call_event`.
+
+### Seed the knowledge base
+
+A drafted starter KB ships in the repo at **`scripts/seed/ca_elevator_compliance.csv`** (topic entries + common CA code categories from CCR Title 8 / ASME A17.1):
 
 ```bash
-bun run import-codes <path-to-xlsx-or-csv> [--sheet "Codes"]
+bun run import-codes scripts/seed/ca_elevator_compliance.csv
+# or without Bun:  npm run import-codes:node -- scripts/seed/ca_elevator_compliance.csv
 ```
 
-Expected columns (header names are case/space-insensitive, several aliases accepted): `code` (required), `jurisdiction`, `title`, `plain_summary`, `severity`, `typical_remedy`, `source_url`. Codes are normalized (uppercased, punctuation stripped) so they match how the agent queries them. Upserts on `code`, so re-running is safe.
+Columns (header names are case/space-insensitive, aliases accepted): `code` (required — a topic key or a code), `jurisdiction`, `title`, `plain_summary`, `severity`, `typical_remedy`, `source_url`. Keys are normalized (uppercased; spaces/punctuation → `_`; dots kept) so they match how the agent queries. Upserts on `code`, so editing + re-running is safe.
 
-> **Until the table is seeded**, `lookupViolationCode` returns "not found → the team will confirm," which is the safe default. Provide the authoritative list (e.g. CA Title 8 elevator safety orders, or the distinct `violation_codes` already present in your leads workbook mapped to plain summaries) to make it answer.
+> ⚠️ **The seed CSV is a DRAFT — Axxiom must review/verify it before live calls** (see `scripts/seed/README.md`). Until the table is seeded, `lookupViolationCode` safely returns "not found → the team will confirm," and the agent still speaks accurately about each lead's own overdue/expired status.
 
 ---
 

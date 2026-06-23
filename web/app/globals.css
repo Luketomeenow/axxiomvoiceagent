@@ -7,5 +7,78 @@
 }
 
 body {
-  @apply bg-ink text-slate-100;
+  @apply bg-ink text-slate-100 antialiased;
+  /* Subtle depth: a couple of soft radial washes over the deep navy base. */
+  background-image:
+    radial-gradient(60rem 60rem at 85% -10%, rgba(56, 189, 248, 0.08), transparent 60%),
+    radial-gradient(50rem 50rem at -10% 10%, rgba(16, 185, 129, 0.06), transparent 55%);
+  background-attachment: fixed;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-white/10 bg-panel/85 backdrop-blur-sm;
+    box-shadow:
+      inset 0 1px 0 0 rgba(255, 255, 255, 0.04),
+      0 12px 32px -16px rgba(0, 0, 0, 0.7);
+  }
+  .card-pad {
+    @apply p-4 sm:p-5;
+  }
+  .section-title {
+    @apply text-base font-semibold tracking-tight text-slate-100;
+  }
+  .muted {
+    @apply text-slate-400;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-semibold transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply bg-emerald-500 text-ink hover:bg-emerald-400 active:scale-[0.98];
+  }
+  .btn-sky {
+    @apply bg-sky-500 text-ink hover:bg-sky-400 active:scale-[0.98];
+  }
+  .btn-danger {
+    @apply bg-rose-500 text-white hover:bg-rose-400 active:scale-[0.98];
+  }
+  .btn-ghost {
+    @apply border border-white/15 text-slate-200 hover:border-white/25 hover:bg-white/10;
+  }
+  .btn-xs {
+    @apply rounded-md px-2.5 py-1 text-xs;
+  }
+
+  .field {
+    @apply w-full rounded-lg border border-white/10 bg-ink/70 px-3 py-2 text-sm text-slate-100 outline-none transition-colors placeholder:text-slate-500 focus:border-sky-500/60 focus:ring-2 focus:ring-sky-500/15;
+  }
+  .label {
+    @apply text-[11px] font-medium uppercase tracking-wide text-slate-400;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium;
+  }
+}
+
+/* Custom effects defined as plain CSS so they don't depend on tailwind.config reloads. */
+.shadow-glow {
+  box-shadow:
+    0 0 0 1px rgba(56, 189, 248, 0.25),
+    0 8px 30px -12px rgba(56, 189, 248, 0.45);
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-in {
+  animation: fadeIn 0.25s ease-out;
 }

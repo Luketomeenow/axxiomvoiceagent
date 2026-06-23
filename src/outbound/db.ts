@@ -56,6 +56,7 @@ export interface LeadRow {
   region: string | null;
   oem_match: string | null;
   problem_type: string | null;
+  inspection_type: string | null;
   violation_codes: string | null;
   violation_count: number | null;
   violation_details: string | null;

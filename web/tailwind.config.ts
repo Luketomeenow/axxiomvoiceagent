@@ -5,8 +5,12 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#0b1220",
-        panel: "#111a2e",
+        ink: "#080d18",
+        panel: "#0f1830",
+        elevated: "#13203c",
+      },
+      fontFamily: {
+        sans: ["var(--font-inter)", "ui-sans-serif", "system-ui", "sans-serif"],
       },
     },
   },

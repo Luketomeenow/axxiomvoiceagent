@@ -32,18 +32,15 @@ export function TestAgentCard() {
   }
 
   return (
-    <div className="rounded-xl border border-white/10 bg-panel p-4">
-      <div className="flex items-center justify-between">
+    <div className="card card-pad">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Test the agent</h2>
-          <p className="text-xs text-slate-400">
+          <h2 className="section-title">Test the agent</h2>
+          <p className="mt-0.5 text-xs text-slate-400">
             Dial any number to hear the live outbound agent. Only call numbers you&apos;re authorized to reach.
           </p>
         </div>
-        <button
-          onClick={() => setOpen((o) => !o)}
-          className="rounded-lg border border-white/20 px-3 py-1.5 text-sm font-semibold hover:bg-white/10"
-        >
+        <button onClick={() => setOpen((o) => !o)} className="btn btn-ghost btn-xs shrink-0">
           {open ? "Close" : "New test call"}
         </button>
       </div>
@@ -59,11 +56,7 @@ export function TestAgentCard() {
             <Input label="Violation code(s)" value={form.violationCodes ?? ""} onChange={(v) => set("violationCodes", v)} placeholder="3.10.4" />
           </div>
           <div className="flex items-center gap-3">
-            <button
-              onClick={placeCall}
-              disabled={busy || !form.phone.trim()}
-              className="rounded-lg bg-sky-500 px-4 py-2 text-sm font-semibold text-ink hover:bg-sky-400 disabled:opacity-50"
-            >
+            <button onClick={placeCall} disabled={busy || !form.phone.trim()} className="btn btn-sky">
               {busy ? "Placing…" : "Place test call"}
             </button>
             {result && <span className="text-sm text-slate-300">{result}</span>}
@@ -87,13 +80,8 @@ function Input({
 }) {
   return (
     <label className="block">
-      <span className="text-xs uppercase tracking-wide text-slate-500">{label}</span>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="mt-1 w-full rounded-lg border border-white/10 bg-ink px-3 py-1.5 text-sm"
-      />
+      <span className="label">{label}</span>
+      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="field mt-1" />
     </label>
   );
 }

@@ -41,14 +41,16 @@ export function RecentCalls() {
   };
 
   return (
-    <div className="rounded-xl border border-white/10 bg-panel p-4">
-      <h2 className="mb-3 text-lg font-semibold">Recent calls</h2>
+    <div className="card card-pad">
+      <h2 className="section-title mb-3">Recent calls</h2>
       {calls.length === 0 ? (
-        <p className="text-sm text-slate-400">No completed calls yet. Recordings and transcripts appear here.</p>
+        <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-400">
+          No completed calls yet. Recordings and transcripts appear here.
+        </p>
       ) : (
         <div className="space-y-3">
           {calls.map((call) => (
-            <div key={call.id} className="rounded-lg border border-white/10 bg-ink/60 p-3">
+            <div key={call.id} className="rounded-xl border border-white/10 bg-ink/60 p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-mono text-sm">{call.phone_number}</span>
                 <div className="flex items-center gap-3 text-xs text-slate-400">

@@ -55,14 +55,14 @@ export function CampaignControls({
   const running = campaign?.status === "running";
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-white/10 bg-panel p-4">
+    <div className="card card-pad flex flex-wrap items-center justify-between gap-4">
       <div>
-        <div className="text-sm text-slate-400">Region / campaign</div>
+        <div className="label">Region / campaign</div>
         {campaigns.length ? (
           <select
             value={campaignId ?? ""}
             onChange={(e) => onSelect(e.target.value)}
-            className="mt-1 rounded-lg border border-white/10 bg-ink px-3 py-1.5 text-lg font-semibold"
+            className="mt-1 rounded-lg border border-white/10 bg-ink px-3 py-1.5 text-lg font-semibold outline-none focus:border-sky-500/60"
           >
             {campaigns.map((c) => (
               <option key={c.id} value={c.id}>
@@ -89,13 +89,7 @@ export function CampaignControls({
           <span className={`h-2 w-2 rounded-full ${running ? "animate-pulse bg-emerald-400" : "bg-slate-400"}`} />
           {campaign?.status ?? "—"}
         </span>
-        <button
-          onClick={toggle}
-          disabled={!campaign || busy}
-          className={`rounded-lg px-4 py-2 text-sm font-semibold disabled:opacity-50 ${
-            running ? "bg-rose-500 hover:bg-rose-400" : "bg-emerald-500 hover:bg-emerald-400 text-ink"
-          }`}
-        >
+        <button onClick={toggle} disabled={!campaign || busy} className={`btn ${running ? "btn-danger" : "btn-primary"}`}>
           {busy ? "…" : running ? "Pause campaign" : "Start campaign"}
         </button>
       </div>

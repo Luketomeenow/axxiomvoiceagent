@@ -32,6 +32,11 @@ export interface ImportResult {
   badNumbers?: number;
 }
 
+export interface BrandInfo {
+  name: string;
+  count: number;
+}
+
 export interface TestCallBody {
   phone: string;
   name?: string;
@@ -61,10 +66,23 @@ export const api = {
     if (opts.campaign) form.append("campaign", opts.campaign);
     return postForm("/outbound/import", form);
   },
-  exportUrl: (disposition: string | "all", format: "csv" | "xlsx", campaignId?: string | null) => {
+  brands: async (campaignId?: string | null): Promise<BrandInfo[]> => {
+    const q = new URLSearchParams();
+    if (campaignId) q.set("campaignId", campaignId);
+    const res = await fetch(`${API_BASE}/outbound/brands?${q.toString()}`);
+    const json = (await res.json()) as { brands?: BrandInfo[] };
+    return json.brands ?? [];
+  },
+  exportUrl: (
+    disposition: string | "all",
+    format: "csv" | "xlsx",
+    campaignId?: string | null,
+    brand?: string | null,
+  ) => {
     const q = new URLSearchParams({ format });
     if (disposition !== "all") q.set("disposition", disposition);
     if (campaignId) q.set("campaignId", campaignId);
+    if (brand) q.set("brand", brand);
     return `${API_BASE}/outbound/export?${q.toString()}`;
   },
 };

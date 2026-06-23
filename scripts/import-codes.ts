@@ -16,7 +16,7 @@ import * as XLSX from "xlsx";
 
 import { db } from "../src/outbound/db.ts";
 
-const DEFAULT_FILE = "data/elevator_codes.xlsx";
+const DEFAULT_FILE = "scripts/seed/ca_elevator_compliance.csv";
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -28,10 +28,17 @@ function str(v: unknown): string | null {
   return s ? s : null;
 }
 
-/** Same normalization the lookup tool applies, so seeded keys match queries. */
+/**
+ * Same normalization the lookup tool applies (src/outbound/handlers.ts), so
+ * seeded keys match queries: uppercase, keep alphanumerics/dots, collapse other
+ * runs to underscores ("overdue inspection" → "OVERDUE_INSPECTION").
+ */
 function normalizeCode(raw: string | null): string | null {
   if (!raw) return null;
-  const n = raw.toUpperCase().replace(/[^A-Z0-9.]/g, "");
+  const n = raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9.]+/g, "_")
+    .replace(/^_+|_+$/g, "");
   return n || null;
 }
 
@@ -51,14 +58,16 @@ async function main() {
   const sheetName = arg("--sheet");
 
   console.log(`Reading ${file}${sheetName ? ` → sheet "${sheetName}"` : ""}…`);
-  const wb = XLSX.readFile(file);
+  // raw:true / cellDates:false so code values like "2.7.6" aren't coerced into
+  // dates/numbers (SheetJS otherwise reads "2.7.6" as a date serial).
+  const wb = XLSX.readFile(file, { raw: true, cellDates: false });
   const sheet = wb.Sheets[sheetName ?? wb.SheetNames[0]];
   if (!sheet) {
     console.error(`Sheet "${sheetName}" not found. Available: ${wb.SheetNames.join(", ")}`);
     process.exit(1);
   }
 
-  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "" });
+  const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: "", raw: true });
   console.log(`Parsed ${rows.length} rows.`);
 
   const seen = new Set<string>();

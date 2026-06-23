@@ -159,8 +159,13 @@ async function runOptOut(args: Record<string, unknown>, message: VapiMessage): P
 async function runLookupViolationCode(args: Record<string, unknown>, message: VapiMessage): Promise<string> {
   const callRowId = await resolveCallRowId(message);
   const raw = typeof args.code === "string" ? args.code.trim() : "";
-  // Normalize for matching: keep alphanumerics and dots, uppercase.
-  const normalized = raw.toUpperCase().replace(/[^A-Z0-9.]/g, "");
+  // Normalize for matching (must match scripts/import-codes.ts): uppercase, keep
+  // alphanumerics/dots, and collapse spaces/punctuation to underscores so topic
+  // keys like "overdue inspection" → "OVERDUE_INSPECTION" line up with the seed.
+  const normalized = raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9.]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 
   let found: Record<string, unknown> | null = null;
   if (normalized) {

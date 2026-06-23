@@ -52,6 +52,33 @@ async function vapiPost(path: string, body: unknown): Promise<{ id?: string } & 
   return json;
 }
 
+/** "State" / "insurance (NEIS)" / "" from the raw inspection_type tag. */
+function inspectionKind(lead: LeadRow): string {
+  const t = (lead.inspection_type || "").toLowerCase();
+  if (t.includes("neis") || t.includes("insurance")) return "insurance (NEIS)";
+  if (t.includes("state")) return "State";
+  return "";
+}
+
+/** Plain-English phrase for what's flagged on this building (accurate, no invented codes). */
+function humanProblem(lead: LeadRow): string {
+  const kind = inspectionKind(lead);
+  const type = kind ? `${kind} elevator inspection` : "elevator inspection";
+  const overdue = (lead.problem_type || "").toLowerCase().includes("overdue");
+  return overdue ? `an overdue ${type}` : `an ${type} on file`;
+}
+
+/** Verified cert status sentence from cert_expiry_date vs. today, or "" if unknown. */
+function certStatus(lead: LeadRow): string {
+  const raw = (lead.cert_expiry_date || "").trim();
+  if (!raw) return "";
+  const when = new Date(raw);
+  if (Number.isNaN(when.getTime())) return `the certificate of operation on file shows ${raw}`;
+  return when.getTime() < Date.now()
+    ? `the certificate of operation on file expired on ${raw}`
+    : `the certificate of operation on file is set to expire on ${raw}`;
+}
+
 /** Variable values injected into the assistant prompt + first message per call. */
 function variableValuesFor(lead: LeadRow): Record<string, string> {
   return {
@@ -59,15 +86,20 @@ function variableValuesFor(lead: LeadRow): Record<string, string> {
     buildingName: lead.building_name || lead.address || "your building",
     address: lead.address ?? "",
     city: lead.city ?? "",
-    problemType: lead.problem_type ?? "an overdue inspection",
     oemMatch: lead.oem_match ?? "unknown",
     certExpiry: lead.cert_expiry_date ?? "unknown",
-    // The building's own inspection record — so the agent speaks accurately
-    // about THIS building's codes (and verifies any specifics via lookupViolationCode).
-    violationCodes: lead.violation_codes || "none on file",
+    // Verified, building-specific compliance status (the value-first hook). These
+    // come straight from the public inspection/permit record on file.
+    humanProblem: humanProblem(lead),
+    inspectionType: inspectionKind(lead) || "inspection",
+    lastInspectionDate: lead.last_inspection_date ?? "unknown",
+    certStatus: certStatus(lead),
+    // Specific cited deficiencies (usually empty today — leads are flagged by an
+    // overdue inspection / expired permit, not by cited codes). The prompt only
+    // references these when present; specifics are confirmed at the free survey.
+    violationCodes: lead.violation_codes || "",
     violationDetails: lead.violation_details || "",
     violationCount: lead.violation_count != null ? String(lead.violation_count) : "0",
-    lastInspectionDate: lead.last_inspection_date ?? "unknown",
   };
 }
 
@@ -287,13 +319,16 @@ export async function testCall(input: TestCallInput): Promise<DialResult> {
     buildingName: input.buildingName || "your building",
     address: input.address || "",
     city: input.city || "",
-    problemType: input.problemType || "an overdue inspection",
     oemMatch: "unknown",
     certExpiry: "unknown",
-    violationCodes: input.violationCodes || "none on file",
+    // Mirror the live prompt variables so test calls behave like real ones.
+    humanProblem: input.problemType || "an overdue State elevator inspection",
+    inspectionType: "inspection",
+    lastInspectionDate: "unknown",
+    certStatus: "the certificate of operation on file has expired",
+    violationCodes: input.violationCodes || "",
     violationDetails: "",
     violationCount: "0",
-    lastInspectionDate: "unknown",
   };
 
   return dispatchCall({ phone, variableValues, metadata: { kind: "test" } });

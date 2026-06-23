@@ -9,6 +9,7 @@ import { RecentCalls } from "@/components/RecentCalls";
 import { LeadsTable } from "@/components/LeadsTable";
 import { ExportButtons } from "@/components/ExportButtons";
 import { TestAgentCard } from "@/components/TestAgentCard";
+import { LiveStatus } from "@/components/LiveStatus";
 
 export default function Page() {
   const [refreshKey, setRefreshKey] = useState(0);
@@ -16,29 +17,44 @@ export default function Page() {
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   return (
-    <main className="mx-auto max-w-7xl space-y-5 p-5">
-      <header className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Axxiom — Outbound Qualification</h1>
-          <p className="text-sm text-slate-400">
-            Elevator-violation leads by region · live Vapi campaign · {`compliant disclosure + DNC enforced`}
-          </p>
+    <div className="min-h-screen">
+      <header className="sticky top-0 z-20 border-b border-white/10 bg-ink/80 backdrop-blur-md">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-br from-sky-400 to-emerald-400 text-sm font-black text-ink shadow-glow">
+              AX
+            </div>
+            <div>
+              <h1 className="text-lg font-bold leading-tight tracking-tight">Axxiom — Outbound Qualification</h1>
+              <p className="text-xs text-slate-400">
+                Elevator-violation leads by region · compliant disclosure + DNC enforced
+              </p>
+            </div>
+          </div>
+          <LiveStatus />
         </div>
       </header>
 
-      <TestAgentCard />
-      <ImportLeadsCard
-        onImported={(id) => {
-          if (id) setCampaignId(id);
-          refresh();
-        }}
-      />
-      <CampaignControls campaignId={campaignId} onSelect={setCampaignId} onChange={refresh} />
-      <StatsBar refreshKey={refreshKey} campaignId={campaignId} />
-      <LiveMonitor />
-      <RecentCalls />
-      <ExportButtons campaignId={campaignId} />
-      <LeadsTable onAction={refresh} campaignId={campaignId} />
-    </main>
+      <main className="mx-auto max-w-7xl space-y-5 p-5">
+        <StatsBar refreshKey={refreshKey} campaignId={campaignId} />
+        <CampaignControls campaignId={campaignId} onSelect={setCampaignId} onChange={refresh} />
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <TestAgentCard />
+          <ImportLeadsCard
+            onImported={(id) => {
+              if (id) setCampaignId(id);
+              refresh();
+            }}
+          />
+        </div>
+
+        <LiveMonitor />
+        <RecentCalls />
+
+        <ExportButtons campaignId={campaignId} />
+        <LeadsTable onAction={refresh} campaignId={campaignId} refreshKey={refreshKey} />
+      </main>
+    </div>
   );
 }

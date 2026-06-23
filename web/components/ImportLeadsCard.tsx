@@ -79,16 +79,16 @@ export function ImportLeadsCard({ onImported }: { onImported?: (campaignId?: str
   const selectedRows = sheets?.find((s) => s.name === sheet)?.rows ?? 0;
 
   return (
-    <div className="rounded-xl border border-white/10 bg-panel p-4">
-      <div className="mb-3 flex items-center justify-between gap-2">
+    <div className="card card-pad">
+      <div className="mb-3 flex items-start justify-between gap-2">
         <div>
-          <h2 className="text-lg font-semibold">Import leads</h2>
-          <p className="text-sm text-slate-400">
+          <h2 className="section-title">Import leads</h2>
+          <p className="mt-0.5 text-xs text-slate-400">
             Upload the leads workbook (.xlsx) and choose the campaign-ready sheet to load.
           </p>
         </div>
         {(file || result) && (
-          <button onClick={reset} className="rounded-md border border-white/10 px-3 py-1 text-sm hover:bg-white/5">
+          <button onClick={reset} className="btn btn-ghost btn-xs shrink-0">
             Reset
           </button>
         )}
@@ -107,12 +107,8 @@ export function ImportLeadsCard({ onImported }: { onImported?: (campaignId?: str
       {sheets && (
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <label className="block">
-            <span className="text-xs uppercase tracking-wide text-slate-400">Campaign-ready sheet</span>
-            <select
-              value={sheet}
-              onChange={(e) => setSheet(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm"
-            >
+            <span className="label">Campaign-ready sheet</span>
+            <select value={sheet} onChange={(e) => setSheet(e.target.value)} className="field mt-1">
               {sheets.map((s) => (
                 <option key={s.name} value={s.name}>
                   {s.name} ({s.rows} rows)
@@ -121,29 +117,25 @@ export function ImportLeadsCard({ onImported }: { onImported?: (campaignId?: str
             </select>
           </label>
           <label className="block">
-            <span className="text-xs uppercase tracking-wide text-slate-400">Region (optional)</span>
+            <span className="label">Region (optional)</span>
             <input
               value={region}
               onChange={(e) => setRegion(e.target.value)}
               placeholder="e.g. CA — Bay Area"
-              className="mt-1 w-full rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm"
+              className="field mt-1"
             />
           </label>
           <label className="block md:col-span-2">
-            <span className="text-xs uppercase tracking-wide text-slate-400">Campaign name (optional)</span>
+            <span className="label">Campaign name (optional)</span>
             <input
               value={campaign}
               onChange={(e) => setCampaign(e.target.value)}
               placeholder={region.trim() || "Defaults to the region or sheet name"}
-              className="mt-1 w-full rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm"
+              className="field mt-1"
             />
           </label>
           <div className="md:col-span-2 flex items-center gap-3">
-            <button
-              onClick={onImport}
-              disabled={busy || !sheet}
-              className="rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-ink hover:bg-emerald-400 disabled:opacity-50"
-            >
+            <button onClick={onImport} disabled={busy || !sheet} className="btn btn-primary">
               {busy ? "Importing…" : `Import ${selectedRows} leads`}
             </button>
             <span className="text-xs text-slate-400">Phones are normalized, deduped, and re-import is safe.</span>

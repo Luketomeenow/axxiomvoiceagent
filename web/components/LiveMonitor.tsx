@@ -66,29 +66,27 @@ export function LiveMonitor() {
   }, []);
 
   return (
-    <div className="rounded-xl border border-white/10 bg-panel p-4">
+    <div className="card card-pad">
       <div className="mb-3 flex items-center gap-2">
-        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-emerald-400" />
-        <h2 className="text-lg font-semibold">Live calls</h2>
+        <span className={`h-2.5 w-2.5 rounded-full ${activeCalls.length ? "animate-pulse bg-emerald-400" : "bg-slate-500"}`} />
+        <h2 className="section-title">Live calls</h2>
         <span className="text-sm text-slate-400">({activeCalls.length} active)</span>
       </div>
       {activeCalls.length === 0 ? (
-        <p className="text-sm text-slate-400">No calls in progress. Start the campaign or use “Call now”.</p>
+        <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-400">
+          No calls in progress. Start the campaign or use “Call now”.
+        </p>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {activeCalls.map((call) => (
-            <div key={call.id} className="rounded-lg border border-white/10 bg-ink/60 p-3">
+            <div key={call.id} className="animate-fade-in rounded-xl border border-white/10 bg-ink/60 p-3">
               <div className="mb-2 flex items-center justify-between gap-2">
                 <span className="font-mono text-sm">{call.phone_number}</span>
                 <div className="flex items-center gap-2">
                   <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-200">
                     {call.status}
                   </span>
-                  <button
-                    onClick={() => handleEnd(call.id)}
-                    disabled={ending[call.id]}
-                    className="rounded-md bg-red-500/90 px-2 py-0.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
-                  >
+                  <button onClick={() => handleEnd(call.id)} disabled={ending[call.id]} className="btn btn-danger btn-xs">
                     {ending[call.id] ? "Ending…" : "End call"}
                   </button>
                 </div>
