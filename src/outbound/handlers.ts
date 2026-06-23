@@ -43,6 +43,53 @@ function leadIdOf(message: VapiMessage): string | undefined {
   return typeof meta.leadId === "string" ? meta.leadId : undefined;
 }
 
+// --- Anti-loop guard -------------------------------------------------------
+// The model sometimes re-fires the same tool over and over (seen as a qualifyLead
+// loop with "one sec" fillers). We dedupe identical repeat calls and cap how many
+// times any one tool runs per call — returning a firm "stop, move on" redirect
+// instead of redoing the work. This breaks the loop and never spams the DB,
+// regardless of why the model repeated itself.
+const MAX_TOOL_REPEATS = 3;
+interface ToolHistory {
+  seen: Set<string>; // `${tool}:${argsHash}`
+  counts: Map<string, number>; // tool -> times actually run
+}
+const toolHistoryByCall = new Map<string, ToolHistory>();
+
+function callKeyOf(message: VapiMessage): string {
+  const meta = callMetadata(message);
+  return (message.call?.id as string) || (meta.callRowId as string) || "unknown";
+}
+
+function stableArgs(args: Record<string, unknown>): string {
+  try {
+    return JSON.stringify(args, Object.keys(args).sort());
+  } catch {
+    return Math.random().toString(36);
+  }
+}
+
+/** Firm redirect when a tool is (re)called unnecessarily — what breaks the loop. */
+function repeatRedirect(tool: string): string {
+  switch (tool) {
+    case OUTBOUND_TOOL_NAMES.qualifyLead:
+      return "You already saved the lead's details — do NOT call qualifyLead again. Keep talking with the caller, and when you're ready to finish, call recordDisposition exactly once.";
+    case OUTBOUND_TOOL_NAMES.lookupViolationCode:
+      return "You already looked that up — use the answer you got. Do NOT call lookupViolationCode again for this.";
+    case OUTBOUND_TOOL_NAMES.recordDisposition:
+      return "The disposition is already recorded — do NOT call recordDisposition again. Wrap up in one sentence and call endCall.";
+    case OUTBOUND_TOOL_NAMES.optOut:
+      return "The opt-out is already handled — apologize briefly and end the call.";
+    default:
+      return "That's already been handled — do not repeat this tool call; just continue the conversation.";
+  }
+}
+
+/** Drop a call's tool history once it ends (keeps the in-memory map small). */
+export function clearToolHistory(message: VapiMessage): void {
+  toolHistoryByCall.delete(callKeyOf(message));
+}
+
 // --- Tool implementations --------------------------------------------------
 
 async function runQualifyLead(args: Record<string, unknown>, message: VapiMessage): Promise<string> {
@@ -207,11 +254,29 @@ async function runLookupViolationCode(args: Record<string, unknown>, message: Va
 
 export async function handleOutboundToolCalls(message: VapiMessage): Promise<VapiToolResults> {
   const results: VapiToolResults["results"] = [];
+  const key = callKeyOf(message);
+  let history = toolHistoryByCall.get(key);
+  if (!history) {
+    history = { seen: new Set(), counts: new Map() };
+    toolHistoryByCall.set(key, history);
+  }
 
   for (const call of toolCallsOf(message)) {
     const name = toolName(call);
     const args = toolArgs(call);
+    // Echo Vapi's tool-call id so the result is delivered back to the model.
+    const toolCallId = call.id ?? `${name}-${results.length}`;
     log.info("Outbound tool call", { callId: message.call?.id, tool: name, args });
+
+    // Anti-loop: an identical repeat, or too many runs of the same tool, gets a
+    // firm redirect instead of re-running — no duplicate DB work, instant reply.
+    const sig = `${name}:${stableArgs(args)}`;
+    const count = history.counts.get(name) ?? 0;
+    if (history.seen.has(sig) || count >= MAX_TOOL_REPEATS) {
+      log.warn("Suppressed repeat tool call", { tool: name, count, callId: message.call?.id });
+      results.push({ toolCallId, result: repeatRedirect(name) });
+      continue;
+    }
 
     let result: string;
     try {
@@ -232,7 +297,9 @@ export async function handleOutboundToolCalls(message: VapiMessage): Promise<Vap
       result = "Sorry, I hit a problem saving that. Wrap up politely; the team will follow up.";
     }
 
-    results.push({ toolCallId: call.id, result });
+    history.seen.add(sig);
+    history.counts.set(name, count + 1);
+    results.push({ toolCallId, result });
   }
 
   return { results };
@@ -280,6 +347,7 @@ export async function handleOutboundTranscript(message: VapiMessage): Promise<vo
 }
 
 export async function handleOutboundEndOfCall(message: VapiMessage): Promise<void> {
+  clearToolHistory(message); // free this call's anti-loop history
   const callRowId = await resolveCallRowId(message);
   const leadId = leadIdOf(message);
   const transcript = message.transcript ?? message.artifact?.transcript ?? "";

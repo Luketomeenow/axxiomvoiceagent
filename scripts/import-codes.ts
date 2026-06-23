@@ -12,6 +12,8 @@
  * to match how the lookup tool queries them.
  */
 
+import { readFileSync } from "node:fs";
+
 import * as XLSX from "xlsx";
 
 import { db } from "../src/outbound/db.ts";
@@ -58,9 +60,10 @@ async function main() {
   const sheetName = arg("--sheet");
 
   console.log(`Reading ${file}${sheetName ? ` → sheet "${sheetName}"` : ""}…`);
-  // raw:true / cellDates:false so code values like "2.7.6" aren't coerced into
-  // dates/numbers (SheetJS otherwise reads "2.7.6" as a date serial).
-  const wb = XLSX.readFile(file, { raw: true, cellDates: false });
+  // Read bytes ourselves (XLSX.readFile needs an fs adapter that isn't wired up
+  // under Node ESM). raw:true / cellDates:false so code values like "2.7.6"
+  // aren't coerced into dates/numbers (SheetJS otherwise reads "2.7.6" as a date).
+  const wb = XLSX.read(readFileSync(file), { type: "buffer", raw: true, cellDates: false });
   const sheet = wb.Sheets[sheetName ?? wb.SheetNames[0]];
   if (!sheet) {
     console.error(`Sheet "${sheetName}" not found. Available: ${wb.SheetNames.join(", ")}`);

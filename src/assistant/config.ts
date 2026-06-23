@@ -7,6 +7,12 @@
  */
 
 import { env } from "../config/env.ts";
+import {
+  buildStartSpeakingPlan,
+  buildStopSpeakingPlan,
+  buildTranscriber,
+  buildVoice,
+} from "./voicePipeline.ts";
 import { buildFirstMessage, buildSystemPrompt } from "./systemPrompt.ts";
 import { buildTools } from "./tools.ts";
 
@@ -23,23 +29,17 @@ export function buildAssistantConfig() {
       provider: "anthropic",
       model: env.anthropicModel,
       temperature: 0.4,
+      // Keep replies short so they start playing fast (prompt asks for 1-2 sentences).
+      maxTokens: 250,
       messages: [{ role: "system", content: buildSystemPrompt() }],
       tools: buildTools(),
     },
 
-    voice: {
-      provider: "11labs",
-      voiceId: env.elevenLabsVoiceId || "burt", // TODO: set ELEVENLABS_VOICE_ID
-      model: "eleven_turbo_v2_5",
-      stability: 0.5,
-      similarityBoost: 0.75,
-    },
-
-    transcriber: {
-      provider: "deepgram",
-      model: "nova-2",
-      language: "en",
-    },
+    // Shared low-latency pipeline (Flash v2.5 voice, nova-3, smart endpointing).
+    voice: buildVoice(),
+    transcriber: buildTranscriber(),
+    startSpeakingPlan: buildStartSpeakingPlan(),
+    stopSpeakingPlan: buildStopSpeakingPlan(),
 
     // Where Vapi sends tool-calls + end-of-call reports.
     server: webhookUrl
@@ -51,6 +51,7 @@ export function buildAssistantConfig() {
     maxDurationSeconds: 600,
     silenceTimeoutSeconds: 30,
     backgroundSound: "office",
+    backgroundDenoisingEnabled: true,
 
     // Built-in post-call analysis (summary + structured data) from Vapi itself;
     // our optional Claude pass in src/ai/analyzeTranscript.ts adds to this.

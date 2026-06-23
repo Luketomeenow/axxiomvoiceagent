@@ -8,6 +8,12 @@
  */
 
 import { env } from "../../config/env.ts";
+import {
+  buildStartSpeakingPlan,
+  buildStopSpeakingPlan,
+  buildTranscriber,
+  buildVoice,
+} from "../voicePipeline.ts";
 import { buildOutboundFirstMessage, buildOutboundSystemPrompt } from "./prompt.ts";
 import { buildOutboundTools } from "./tools.ts";
 
@@ -24,40 +30,19 @@ export function buildOutboundAssistantConfig() {
       model: env.anthropicModel,
       // Slightly lower than inbound for more consistent qualifying.
       temperature: 0.3,
+      // Cap the reply length so completions finish (and start speaking) fast —
+      // the prompt already asks for one or two sentences.
+      maxTokens: 250,
       messages: [{ role: "system", content: buildOutboundSystemPrompt() }],
       tools: buildOutboundTools(),
     },
 
-    voice: {
-      provider: "11labs",
-      voiceId: env.elevenLabsVoiceId || "burt",
-      model: "eleven_turbo_v2_5",
-      stability: 0.5,
-      similarityBoost: 0.8,
-      useSpeakerBoost: true,
-      // Trade a touch of quality for lower latency — matters on cold calls.
-      optimizeStreamingLatency: 3,
-    },
+    // Shared low-latency pipeline (Flash v2.5 voice, nova-3, smart endpointing).
+    voice: buildVoice(),
+    transcriber: buildTranscriber(),
+    startSpeakingPlan: buildStartSpeakingPlan(),
+    stopSpeakingPlan: buildStopSpeakingPlan(),
 
-    transcriber: {
-      provider: "deepgram",
-      model: "nova-2",
-      language: "en",
-    },
-
-    // Turn-taking: wait a beat so we don't talk over their "Hello?", and use
-    // smart endpointing for more accurate detection of when they've finished.
-    startSpeakingPlan: {
-      waitSeconds: 0.6,
-      smartEndpointingPlan: { provider: "livekit" },
-    },
-    // Require a couple of words before the agent yields, so background noise /
-    // short backchannel ("uh huh") doesn't constantly cut it off.
-    stopSpeakingPlan: {
-      numWords: 2,
-      voiceSeconds: 0.3,
-      backoffSeconds: 1,
-    },
     // Outbound should sound clean and clearly disclosed, not like a call center.
     backgroundSound: "off",
     // Filter ambient noise so the transcriber + endpointing behave on real calls.
