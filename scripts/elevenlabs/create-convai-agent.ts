@@ -85,8 +85,17 @@ async function main() {
     },
     tts: {
       voice_id: voiceId,
-      // Convai requires flash/turbo v2 for English agents (not v2_5).
-      model_id: "eleven_flash_v2",
+      // Turbo v2 is far more natural/expressive than flash v2 (Convai requires a
+      // v2 model for English agents — v2.5 is rejected).
+      model_id: "eleven_turbo_v2",
+      // Lower stability = more lively, human variation (0.5 sounds flat/monotone).
+      stability: 0.35,
+      similarity_boost: 0.85,
+      speed: 0.98, // a hair slower reads as relaxed/human, not rushed
+      // Low latency optimization = better audio quality (3 adds robotic artifacts).
+      optimize_streaming_latency: 1,
+      // (expressive_mode isn't supported on turbo_v2 — the API ignores it — so
+      // naturalness comes from the voice + model + low stability instead.)
     },
   };
 

@@ -44,7 +44,8 @@ export function VoicePicker() {
         setStatus(`Could not switch: ${r.error ?? "unknown error"}`);
       } else {
         setCurrent(selected.trim());
-        setStatus("Voice updated — new calls will use it.");
+        const where = Array.isArray(r?.applied) && r.applied.length ? r.applied.join(" + ") : "the agent";
+        setStatus(`Applied to ${where}.${r?.error ? ` (note: ${r.error})` : ""}`);
       }
     } catch (e) {
       setStatus(`Error (is the backend deployed?): ${String(e)}`);
@@ -62,7 +63,7 @@ export function VoicePicker() {
         <div>
           <h2 className="section-title">Voice</h2>
           <p className="mt-0.5 text-xs text-slate-400">
-            Outbound agent voice (ElevenLabs). Applies to new calls; your other voice settings stay the same.
+            Applies to both the ElevenLabs and Vapi agents. New calls/sessions use it; other voice settings stay the same.
           </p>
         </div>
         {selectedVoice?.previewUrl && (

@@ -49,30 +49,54 @@ export async function listElevenLabsVoices(): Promise<VoiceOption[]> {
   }));
 }
 
-/** Persist the chosen voice and apply it live to the outbound Vapi assistant. */
-export async function setOutboundVoice(voiceId: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Persist the chosen voice and apply it live to BOTH agents we're evaluating:
+ * the Vapi outbound assistant and the ElevenLabs Conversational AI agent. Each
+ * is optional (skipped if its id isn't configured); we report which ones took.
+ */
+export async function setOutboundVoice(
+  voiceId: string,
+): Promise<{ ok: boolean; applied: string[]; error?: string }> {
   const id = voiceId.trim();
-  if (!id) return { ok: false, error: "voiceId is required" };
+  if (!id) return { ok: false, applied: [], error: "voiceId is required" };
 
-  // Persist first so it sticks across create-assistant re-runs.
+  // Persist first so it sticks across create-assistant / create-convai-agent re-runs.
   try {
     await db()
       .from("app_setting")
       .upsert({ key: VOICE_SETTING_KEY, value: id, updated_at: new Date().toISOString() }, { onConflict: "key" });
   } catch (err) {
-    return { ok: false, error: `could not save voice: ${String(err)}` };
+    return { ok: false, applied: [], error: `could not save voice: ${String(err)}` };
   }
 
-  // Apply live to the deployed assistant (keeps all other voice settings).
-  if (!env.outboundAssistantId) return { ok: false, error: "OUTBOUND_ASSISTANT_ID not set" };
-  if (!env.vapiApiKey) return { ok: false, error: "VAPI_API_KEY not set" };
-  const res = await fetch(`${VAPI_API}/assistant/${env.outboundAssistantId}`, {
-    method: "PATCH",
-    headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ voice: buildVoice(id) }),
-  });
-  if (!res.ok) return { ok: false, error: `Vapi PATCH ${res.status}: ${(await res.text()).slice(0, 200)}` };
+  const applied: string[] = [];
+  const errors: string[] = [];
 
-  log.info("Outbound voice switched", { voiceId: id });
-  return { ok: true };
+  // Vapi assistant — replace voice (keeps the rest of our voice settings).
+  if (env.outboundAssistantId && env.vapiApiKey) {
+    const res = await fetch(`${VAPI_API}/assistant/${env.outboundAssistantId}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ voice: buildVoice(id) }),
+    });
+    if (res.ok) applied.push("Vapi");
+    else errors.push(`Vapi ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  }
+
+  // ElevenLabs Convai agent — patch just the voice_id (merges, keeps model/stability/etc.).
+  if (env.elevenLabsAgentId && env.elevenLabsApiKey) {
+    const res = await fetch(`${ELEVENLABS_API}/convai/agents/${env.elevenLabsAgentId}`, {
+      method: "PATCH",
+      headers: { "xi-api-key": env.elevenLabsApiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_config: { tts: { voice_id: id } } }),
+    });
+    if (res.ok) applied.push("ElevenLabs");
+    else errors.push(`ElevenLabs ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  }
+
+  if (!applied.length) {
+    return { ok: false, applied, error: errors.join("; ") || "no agent configured to apply the voice to" };
+  }
+  log.info("Voice switched", { voiceId: id, applied });
+  return { ok: true, applied, error: errors.length ? errors.join("; ") : undefined };
 }
