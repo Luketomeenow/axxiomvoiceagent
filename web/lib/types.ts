@@ -76,6 +76,7 @@ export interface Campaign {
   id: string;
   name: string;
   region: string | null;
+  brand: string | null;
   status: "draft" | "running" | "paused" | "done";
   timezone: string;
   call_window_start: number;

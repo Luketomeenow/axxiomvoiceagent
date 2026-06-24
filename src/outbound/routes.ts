@@ -22,6 +22,7 @@ import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, ty
 import { db } from "./db.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
+import { BRANDS } from "../assistant/brands.ts";
 
 export const outbound = new Hono();
 
@@ -86,19 +87,31 @@ outbound.post("/outbound/campaign/pause", async (c) => {
   return c.json({ ok: true, status: "paused" });
 });
 
-// Rename / re-region a campaign.
+// Rename / re-region / set the brand on a campaign (brand → per-brand agent + caller ID).
 outbound.post("/outbound/campaign/:id/update", async (c) => {
   const id = c.req.param("id");
-  const body = await c.req.json<{ name?: string; region?: string }>().catch(() => ({}) as { name?: string; region?: string });
+  const body = await c.req
+    .json<{ name?: string; region?: string; brand?: string }>()
+    .catch(() => ({}) as { name?: string; region?: string; brand?: string });
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
   if (typeof body.region === "string") patch.region = body.region.trim() || null;
-  if (!("name" in patch) && !("region" in patch)) return c.json({ ok: false, error: "nothing to update" }, 400);
+  if (typeof body.brand === "string") patch.brand = body.brand.trim() || null;
+  if (!("name" in patch) && !("region" in patch) && !("brand" in patch)) {
+    return c.json({ ok: false, error: "nothing to update" }, 400);
+  }
   const { data, error } = await db().from("campaign").update(patch).eq("id", id).select("*").maybeSingle();
   if (error) return c.json({ ok: false, error: error.message }, 500);
   if (!data) return c.json({ ok: false, error: "campaign not found" }, 404);
   log.info("Campaign updated", { campaignId: id, patch });
   return c.json({ ok: true, campaign: data });
+});
+
+// The brands available to assign to campaigns (for the dashboard dropdown).
+outbound.get("/outbound/brand-list", (c) => {
+  return c.json({
+    brands: BRANDS.map((b) => ({ slug: b.slug, displayName: b.displayName, serviceArea: b.serviceArea })),
+  });
 });
 
 // Delete a campaign and all of its leads (calls/events cascade off the leads).

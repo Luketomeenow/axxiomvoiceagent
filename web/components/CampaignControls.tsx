@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { api } from "@/lib/api";
+import { api, type BrandInfoOption } from "@/lib/api";
 import type { Campaign } from "@/lib/types";
 
 export function CampaignControls({
@@ -15,6 +15,7 @@ export function CampaignControls({
   onChange: () => void;
 }) {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [brands, setBrands] = useState<BrandInfoOption[]>([]);
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
@@ -27,7 +28,20 @@ export function CampaignControls({
     if (!campaignId && list.length) onSelect(list[0].id);
   }
 
+  async function setBrand(brand: string) {
+    if (!campaign) return;
+    setBusy(true);
+    try {
+      await api.updateCampaign(campaign.id, { brand });
+      await load();
+      onChange();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
+    api.brandList().then(setBrands).catch(() => {});
     load();
     const ch = supabase
       .channel("campaign-changes")
@@ -153,6 +167,24 @@ export function CampaignControls({
             <button onClick={remove} disabled={busy} className="text-rose-400 hover:text-rose-300">
               Delete
             </button>
+          </div>
+        )}
+        {campaign && !editing && (
+          <div className="mt-2 flex items-center gap-2 text-xs text-slate-400">
+            <span>Brand agent + caller ID:</span>
+            <select
+              value={campaign.brand ?? ""}
+              onChange={(e) => setBrand(e.target.value)}
+              disabled={busy}
+              className="rounded-lg border border-white/10 bg-ink px-2 py-1 text-xs text-slate-200 outline-none focus:border-sky-500/60"
+            >
+              <option value="">— unassigned (default) —</option>
+              {brands.map((b) => (
+                <option key={b.slug} value={b.slug}>
+                  {b.displayName} · {b.serviceArea}
+                </option>
+              ))}
+            </select>
           </div>
         )}
       </div>

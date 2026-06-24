@@ -210,6 +210,7 @@ alter table outbound.call add column if not exists control_url text;
 
 -- Region tagging: one campaign per region, region stamped on every lead.
 alter table outbound.campaign add column if not exists region text;
+alter table outbound.campaign add column if not exists brand text;  -- brand slug → per-brand agent + caller ID
 alter table outbound.lead     add column if not exists region text;
 create index if not exists outbound_lead_region_idx on outbound.lead (region);
 

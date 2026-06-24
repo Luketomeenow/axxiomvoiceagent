@@ -97,14 +97,14 @@ export const optOutTool = {
   },
 };
 
-/** Vapi built-in transfer tool, wired to the configured human number. */
-export function transferToHumanTool() {
+/** Vapi built-in transfer tool, wired to the given human number. */
+export function transferToHumanTool(number: string) {
   return {
     type: "transferCall" as const,
     destinations: [
       {
         type: "number" as const,
-        number: env.transferPhoneNumber,
+        number,
         message: "Sure — let me connect you with someone on the team now, one moment.",
       },
     ],
@@ -119,8 +119,8 @@ export function endCallTool() {
   return { type: "endCall" as const };
 }
 
-/** All outbound tools. transferCall is only added when a number is configured. */
-export function buildOutboundTools(): unknown[] {
+/** All outbound tools. transferCall is only added when a transfer number is available. */
+export function buildOutboundTools(transferNumber: string = env.transferPhoneNumber): unknown[] {
   const tools: unknown[] = [
     qualifyLeadTool,
     recordDispositionTool,
@@ -128,6 +128,6 @@ export function buildOutboundTools(): unknown[] {
     lookupViolationCodeTool,
     endCallTool(),
   ];
-  if (env.transferPhoneNumber) tools.push(transferToHumanTool());
+  if (transferNumber) tools.push(transferToHumanTool(transferNumber));
   return tools;
 }

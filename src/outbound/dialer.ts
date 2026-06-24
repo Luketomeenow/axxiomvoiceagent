@@ -15,6 +15,23 @@ import { assertOutbound, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
 import { checkSuppression, db, recordEvent, type LeadRow } from "./db.ts";
 import { toE164 } from "./phone.ts";
+import { getBrand } from "../assistant/brands.ts";
+import { getBrandAssistantId } from "./brandStore.ts";
+
+/**
+ * Resolve which brand assistant + caller-ID to dial with, from the lead's
+ * campaign brand. Falls back to the env default assistant/number when a campaign
+ * has no brand (or the brand assistant hasn't been created yet).
+ */
+async function brandRoutingFor(campaignId: string | null): Promise<{ assistantId?: string; phoneNumberId?: string }> {
+  if (!campaignId) return {};
+  const { data } = await db().from("campaign").select("brand").eq("id", campaignId).maybeSingle();
+  const slug = (data?.brand as string | undefined)?.trim();
+  if (!slug) return {};
+  const brand = getBrand(slug);
+  if (!brand) return {};
+  return { assistantId: (await getBrandAssistantId(slug)) || undefined, phoneNumberId: brand.vapiPhoneNumberId };
+}
 
 const VAPI_API = "https://api.vapi.ai";
 
@@ -114,6 +131,8 @@ async function dispatchCall(opts: {
   metadata: Record<string, unknown>;
   leadId?: string | null;
   campaignId?: string | null;
+  assistantId?: string; // per-brand override (else the env default)
+  phoneNumberId?: string; // per-brand caller-ID override (else the env default)
 }): Promise<DialResult> {
   assertOutbound();
 
@@ -136,8 +155,8 @@ async function dispatchCall(opts: {
 
   try {
     const result = await vapiPost("/call", {
-      phoneNumberId: env.vapiPhoneNumberId,
-      assistantId: env.outboundAssistantId,
+      phoneNumberId: opts.phoneNumberId || env.vapiPhoneNumberId,
+      assistantId: opts.assistantId || env.outboundAssistantId,
       assistantOverrides: { variableValues: opts.variableValues },
       customer: { number: opts.phone },
       metadata: { ...opts.metadata, callRowId },
@@ -203,12 +222,17 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     return { ok: false, reason: "outside calling window" };
   }
 
+  // Route to the campaign's brand assistant + local caller-ID (env default otherwise).
+  const routing = await brandRoutingFor(lead.campaign_id);
+
   const result = await dispatchCall({
     phone,
     variableValues: variableValuesFor(lead),
     metadata: { leadId: lead.id, campaignId: lead.campaign_id, kind: "outbound" },
     leadId: lead.id,
     campaignId: lead.campaign_id,
+    assistantId: routing.assistantId,
+    phoneNumberId: routing.phoneNumberId,
   });
 
   if (result.ok) {

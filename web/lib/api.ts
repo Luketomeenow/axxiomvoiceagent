@@ -52,6 +52,12 @@ export interface VoicesResponse {
   error?: string;
 }
 
+export interface BrandInfoOption {
+  slug: string;
+  displayName: string;
+  serviceArea: string;
+}
+
 export interface TestCallBody {
   phone: string;
   name?: string;
@@ -65,9 +71,14 @@ export interface TestCallBody {
 export const api = {
   startCampaign: (campaignId?: string) => post("/outbound/campaign/start", { campaignId }),
   pauseCampaign: (campaignId?: string) => post("/outbound/campaign/pause", { campaignId }),
-  updateCampaign: (id: string, patch: { name?: string; region?: string }) =>
+  updateCampaign: (id: string, patch: { name?: string; region?: string; brand?: string }) =>
     post(`/outbound/campaign/${id}/update`, patch),
   deleteCampaign: (id: string) => post(`/outbound/campaign/${id}/delete`),
+  brandList: async (): Promise<BrandInfoOption[]> => {
+    const res = await fetch(`${API_BASE}/outbound/brand-list`);
+    const json = (await res.json()) as { brands?: BrandInfoOption[] };
+    return json.brands ?? [];
+  },
   callNow: (leadId: string) => post(`/outbound/call-now/${leadId}`),
   endCall: (callId: string) => post(`/outbound/calls/${callId}/end`),
   testCall: (body: TestCallBody) => post("/outbound/test-call", body),

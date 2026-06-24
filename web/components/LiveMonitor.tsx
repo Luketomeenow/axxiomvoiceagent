@@ -5,12 +5,18 @@ import { supabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
 import type { Call, CallEvent } from "@/lib/types";
 
+// Active call joined with its campaign name + lead brand (PostgREST embeds).
+type ActiveCall = Call & {
+  campaign?: { name: string | null } | null;
+  lead?: { servicing_brand: string | null; building_name: string | null } | null;
+};
+
 /**
  * Live monitor: shows calls that are currently in flight and streams transcript
  * lines as they arrive via Supabase Realtime on outbound.call + outbound.call_event.
  */
 export function LiveMonitor() {
-  const [activeCalls, setActiveCalls] = useState<Call[]>([]);
+  const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
   const [events, setEvents] = useState<Record<string, CallEvent[]>>({});
   const [ending, setEnding] = useState<Record<string, boolean>>({});
   const eventsRef = useRef(events);
@@ -38,11 +44,11 @@ export function LiveMonitor() {
     const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
     const { data } = await supabase
       .from("call")
-      .select("*")
+      .select("*, campaign:campaign_id(name), lead:lead_id(servicing_brand,building_name)")
       .in("status", ["queued", "ringing", "in-progress"])
       .gte("created_at", cutoff)
       .order("created_at", { ascending: false });
-    setActiveCalls((data as Call[]) ?? []);
+    setActiveCalls((data as ActiveCall[]) ?? []);
   }
 
   useEffect(() => {
@@ -80,9 +86,21 @@ export function LiveMonitor() {
         <div className="grid gap-4 md:grid-cols-2">
           {activeCalls.map((call) => (
             <div key={call.id} className="animate-fade-in rounded-xl border border-white/10 bg-ink/60 p-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <span className="font-mono text-sm">{call.phone_number}</span>
-                <div className="flex items-center gap-2">
+              <div className="mb-2 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <span className="font-mono text-sm">{call.phone_number}</span>
+                  <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+                    <span className="rounded-full border border-sky-500/30 bg-sky-500/15 px-1.5 py-0.5 text-sky-300">
+                      {call.campaign?.name || "no campaign"}
+                    </span>
+                    {call.lead?.servicing_brand && (
+                      <span className="rounded-full border border-violet-500/30 bg-violet-500/15 px-1.5 py-0.5 text-violet-300">
+                        {call.lead.servicing_brand}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
                   <span className="rounded-full bg-yellow-500/20 px-2 py-0.5 text-xs text-yellow-200">
                     {call.status}
                   </span>
