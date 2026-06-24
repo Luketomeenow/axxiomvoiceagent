@@ -11,6 +11,7 @@
 
 import { env } from "../../src/config/env.ts";
 import { buildOutboundFirstMessage, buildOutboundSystemPrompt } from "../../src/assistant/outbound/prompt.ts";
+import { getElevenLabsAgentVoiceId } from "../../src/outbound/voice.ts";
 
 const EL = "https://api.elevenlabs.io/v1";
 
@@ -52,16 +53,15 @@ async function el(path: string, method: string, body?: unknown) {
   return json;
 }
 
-/** Use the configured voice if it actually exists on this account, else the first one. */
+/** Use the dashboard-selected (or env) voice if it exists on this account, else the first one. */
 async function resolveVoiceId(): Promise<string> {
+  const desired = (await getElevenLabsAgentVoiceId()) || "";
   const voices = (await el("/voices", "GET")) as { voices?: Array<{ voice_id?: string; name?: string }> };
   const list = voices.voices ?? [];
   if (!list.length) throw new Error("No ElevenLabs voices found on the account.");
-  if (env.elevenLabsVoiceId && list.some((v) => v.voice_id === env.elevenLabsVoiceId)) {
-    return env.elevenLabsVoiceId;
-  }
-  if (env.elevenLabsVoiceId) {
-    console.warn(`⚠️  ELEVENLABS_VOICE_ID (${env.elevenLabsVoiceId}) isn't on this account — using "${list[0].name}" instead.`);
+  if (desired && list.some((v) => v.voice_id === desired)) return desired;
+  if (desired) {
+    console.warn(`⚠️  voice ${desired} isn't on this account — using "${list[0].name}" instead.`);
   }
   return list[0].voice_id as string;
 }

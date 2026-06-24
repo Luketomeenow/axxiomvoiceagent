@@ -1,10 +1,12 @@
 /**
- * ElevenLabs voice switching for the outbound assistant.
+ * ElevenLabs voice switching, INDEPENDENT per agent.
  *
- * The selected voice id is persisted in outbound.app_setting (so it survives
- * `create-outbound-assistant` re-runs) AND applied live by PATCHing the Vapi
- * assistant's `voice`. The ELEVENLABS_VOICE_ID env value stays the fallback —
- * nothing changes until someone picks a different voice in the dashboard.
+ * Each agent keeps its own voice, persisted in outbound.app_setting (so it
+ * survives create-assistant / create-convai-agent re-runs):
+ *   - vapi_voice_id        → the Vapi outbound assistant
+ *   - elevenlabs_voice_id  → the ElevenLabs Conversational AI agent
+ * ELEVENLABS_VOICE_ID stays the fallback for both. Picking a voice in the
+ * dashboard applies it to ONLY the chosen target.
  */
 
 import { env } from "../config/env.ts";
@@ -12,7 +14,11 @@ import { log } from "../lib/logger.ts";
 import { buildVoice } from "../assistant/voicePipeline.ts";
 import { db } from "./db.ts";
 
-const VOICE_SETTING_KEY = "outbound_voice_id";
+export type VoiceTarget = "vapi" | "elevenlabs";
+const VOICE_KEY: Record<VoiceTarget, string> = {
+  vapi: "vapi_voice_id",
+  elevenlabs: "elevenlabs_voice_id",
+};
 const VAPI_API = "https://api.vapi.ai";
 const ELEVENLABS_API = "https://api.elevenlabs.io/v1";
 
@@ -23,16 +29,24 @@ export interface VoiceOption {
   previewUrl?: string;
 }
 
-/** The currently-selected outbound voice id (persisted override, else env default). */
-export async function getOutboundVoiceId(): Promise<string> {
+async function readSetting(key: string): Promise<string | undefined> {
   try {
-    const { data } = await db().from("app_setting").select("value").eq("key", VOICE_SETTING_KEY).maybeSingle();
-    const v = (data?.value as string | undefined)?.trim();
-    if (v) return v;
+    const { data } = await db().from("app_setting").select("value").eq("key", key).maybeSingle();
+    return (data?.value as string | undefined)?.trim() || undefined;
   } catch (err) {
-    log.warn("Could not read persisted voice — using env default", { err: String(err) });
+    log.warn("app_setting read failed — using env fallback", { key, err: String(err) });
+    return undefined;
   }
-  return env.elevenLabsVoiceId || "burt";
+}
+
+/** Current Vapi assistant voice (persisted, else env). Used by create-outbound-assistant. */
+export async function getVapiVoiceId(): Promise<string> {
+  return (await readSetting(VOICE_KEY.vapi)) || env.elevenLabsVoiceId || "burt";
+}
+
+/** Current ElevenLabs agent voice (persisted, else env). Used by create-convai-agent. */
+export async function getElevenLabsAgentVoiceId(): Promise<string> {
+  return (await readSetting(VOICE_KEY.elevenlabs)) || env.elevenLabsVoiceId || "";
 }
 
 /** List the account's ElevenLabs voices (needs ELEVENLABS_API_KEY). */
@@ -49,54 +63,52 @@ export async function listElevenLabsVoices(): Promise<VoiceOption[]> {
   }));
 }
 
+/** Both agents' current voices, for the dashboard to preselect per target. */
+export async function getCurrentVoices(): Promise<Record<VoiceTarget, string>> {
+  const [vapi, elevenlabs] = await Promise.all([getVapiVoiceId(), getElevenLabsAgentVoiceId()]);
+  return { vapi, elevenlabs };
+}
+
 /**
- * Persist the chosen voice and apply it live to BOTH agents we're evaluating:
- * the Vapi outbound assistant and the ElevenLabs Conversational AI agent. Each
- * is optional (skipped if its id isn't configured); we report which ones took.
+ * Persist + apply a voice to ONE agent (independent per target). The other
+ * agent is untouched.
  */
-export async function setOutboundVoice(
+export async function setAgentVoice(
   voiceId: string,
-): Promise<{ ok: boolean; applied: string[]; error?: string }> {
+  target: VoiceTarget,
+): Promise<{ ok: boolean; error?: string }> {
   const id = voiceId.trim();
-  if (!id) return { ok: false, applied: [], error: "voiceId is required" };
+  if (!id) return { ok: false, error: "voiceId is required" };
+  if (target !== "vapi" && target !== "elevenlabs") return { ok: false, error: "invalid target" };
 
   // Persist first so it sticks across create-assistant / create-convai-agent re-runs.
   try {
     await db()
       .from("app_setting")
-      .upsert({ key: VOICE_SETTING_KEY, value: id, updated_at: new Date().toISOString() }, { onConflict: "key" });
+      .upsert({ key: VOICE_KEY[target], value: id, updated_at: new Date().toISOString() }, { onConflict: "key" });
   } catch (err) {
-    return { ok: false, applied: [], error: `could not save voice: ${String(err)}` };
+    return { ok: false, error: `could not save voice: ${String(err)}` };
   }
 
-  const applied: string[] = [];
-  const errors: string[] = [];
-
-  // Vapi assistant — replace voice (keeps the rest of our voice settings).
-  if (env.outboundAssistantId && env.vapiApiKey) {
+  if (target === "vapi") {
+    if (!env.outboundAssistantId || !env.vapiApiKey) return { ok: false, error: "Vapi assistant not configured" };
     const res = await fetch(`${VAPI_API}/assistant/${env.outboundAssistantId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ voice: buildVoice(id) }),
     });
-    if (res.ok) applied.push("Vapi");
-    else errors.push(`Vapi ${res.status}: ${(await res.text()).slice(0, 120)}`);
-  }
-
-  // ElevenLabs Convai agent — patch just the voice_id (merges, keeps model/stability/etc.).
-  if (env.elevenLabsAgentId && env.elevenLabsApiKey) {
+    if (!res.ok) return { ok: false, error: `Vapi PATCH ${res.status}: ${(await res.text()).slice(0, 200)}` };
+  } else {
+    if (!env.elevenLabsAgentId || !env.elevenLabsApiKey) return { ok: false, error: "ElevenLabs agent not configured" };
+    // Patch just the voice_id (merges — keeps model/stability/etc.).
     const res = await fetch(`${ELEVENLABS_API}/convai/agents/${env.elevenLabsAgentId}`, {
       method: "PATCH",
       headers: { "xi-api-key": env.elevenLabsApiKey, "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_config: { tts: { voice_id: id } } }),
     });
-    if (res.ok) applied.push("ElevenLabs");
-    else errors.push(`ElevenLabs ${res.status}: ${(await res.text()).slice(0, 120)}`);
+    if (!res.ok) return { ok: false, error: `ElevenLabs PATCH ${res.status}: ${(await res.text()).slice(0, 200)}` };
   }
 
-  if (!applied.length) {
-    return { ok: false, applied, error: errors.join("; ") || "no agent configured to apply the voice to" };
-  }
-  log.info("Voice switched", { voiceId: id, applied });
-  return { ok: true, applied, error: errors.length ? errors.join("; ") : undefined };
+  log.info("Voice switched", { voiceId: id, target });
+  return { ok: true };
 }

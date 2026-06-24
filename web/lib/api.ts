@@ -44,9 +44,11 @@ export interface VoiceOption {
   previewUrl?: string;
 }
 
+export type VoiceTarget = "vapi" | "elevenlabs";
+
 export interface VoicesResponse {
   voices: VoiceOption[];
-  current: string;
+  current: Record<VoiceTarget, string>;
   error?: string;
 }
 
@@ -73,7 +75,7 @@ export const api = {
     const res = await fetch(`${API_BASE}/outbound/voices`);
     return res.json();
   },
-  setVoice: (voiceId: string) => post("/outbound/voice", { voiceId }),
+  setVoice: (voiceId: string, target: VoiceTarget) => post("/outbound/voice", { voiceId, target }),
   elAgentSignedUrl: async (): Promise<{ ok: boolean; signedUrl?: string; agentId?: string; error?: string }> => {
     const res = await fetch(`${API_BASE}/outbound/el-agent/signed-url`);
     return res.json();

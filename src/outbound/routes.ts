@@ -21,7 +21,7 @@ import { log } from "../lib/logger.ts";
 import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
 import { db } from "./db.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
-import { getOutboundVoiceId, listElevenLabsVoices, setOutboundVoice } from "./voice.ts";
+import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
 
 export const outbound = new Hono();
 
@@ -128,24 +128,27 @@ outbound.get("/outbound/el-agent/signed-url", async (c) => {
   return c.json({ ok: true, agentId: env.elevenLabsAgentId, signedUrl: json.signed_url });
 });
 
-// List ElevenLabs voices + the currently-selected outbound voice (for the picker).
+// List ElevenLabs voices + each agent's currently-selected voice (for the picker).
 outbound.get("/outbound/voices", async (c) => {
-  const current = await getOutboundVoiceId();
+  const current = await getCurrentVoices(); // { vapi, elevenlabs }
   try {
     const voices = await listElevenLabsVoices();
     return c.json({ voices, current });
   } catch (err) {
-    // No EL key / fetch failed — still return the current id so the UI can show it.
+    // No EL key / fetch failed — still return current ids so the UI can show them.
     return c.json({ voices: [], current, error: String(err) });
   }
 });
 
-// Switch the outbound assistant's ElevenLabs voice (persist + live PATCH Vapi).
+// Switch ONE agent's voice (independent per target). Defaults to the ElevenLabs agent.
 outbound.post("/outbound/voice", async (c) => {
-  const body = await c.req.json<{ voiceId?: string }>().catch(() => ({}) as { voiceId?: string });
+  const body = await c.req
+    .json<{ voiceId?: string; target?: VoiceTarget }>()
+    .catch(() => ({}) as { voiceId?: string; target?: VoiceTarget });
   if (!body.voiceId) return c.json({ ok: false, error: "voiceId is required" }, 400);
-  const result = await setOutboundVoice(body.voiceId);
-  log.info("Voice switch requested", { voiceId: body.voiceId, ok: result.ok });
+  const target: VoiceTarget = body.target === "vapi" ? "vapi" : "elevenlabs";
+  const result = await setAgentVoice(body.voiceId, target);
+  log.info("Voice switch requested", { voiceId: body.voiceId, target, ok: result.ok });
   return c.json(result, result.ok ? 200 : 400);
 });
 
