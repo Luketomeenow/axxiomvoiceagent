@@ -19,10 +19,10 @@ import { env } from "../config/env.ts";
  * consistent phone voice. Lower stability = a touch more expressive/human; a
  * little style adds warmth without much latency or instability.
  */
-export function buildVoice() {
+export function buildVoice(voiceId?: string) {
   return {
     provider: "11labs" as const,
-    voiceId: env.elevenLabsVoiceId || "burt",
+    voiceId: voiceId || env.elevenLabsVoiceId || "burt",
     model: "eleven_flash_v2_5",
     stability: 0.45,
     similarityBoost: 0.75,

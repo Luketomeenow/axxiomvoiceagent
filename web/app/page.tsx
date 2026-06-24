@@ -9,6 +9,8 @@ import { RecentCalls } from "@/components/RecentCalls";
 import { LeadsTable } from "@/components/LeadsTable";
 import { ExportButtons } from "@/components/ExportButtons";
 import { TestAgentCard } from "@/components/TestAgentCard";
+import { VoicePicker } from "@/components/VoicePicker";
+import { AgentSwitcher } from "@/components/AgentSwitcher";
 import { LiveStatus } from "@/components/LiveStatus";
 
 export default function Page() {
@@ -47,6 +49,11 @@ export default function Page() {
               refresh();
             }}
           />
+        </div>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          <AgentSwitcher />
+          <VoicePicker />
         </div>
 
         <LiveMonitor />

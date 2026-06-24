@@ -18,7 +18,7 @@ import {
 import { buildOutboundFirstMessage, buildOutboundSystemPrompt } from "./prompt.ts";
 import { buildOutboundTools } from "./tools.ts";
 
-export function buildOutboundAssistantConfig() {
+export function buildOutboundAssistantConfig(opts: { voiceId?: string } = {}) {
   const webhookUrl = env.serverUrl ? `${env.serverUrl.replace(/\/$/, "")}/vapi/webhook` : undefined;
 
   return {
@@ -39,7 +39,8 @@ export function buildOutboundAssistantConfig() {
     },
 
     // Shared low-latency pipeline (Flash v2.5 voice, nova-3, smart endpointing).
-    voice: buildVoice(),
+    // voiceId override (from the dashboard voice picker) wins over the env default.
+    voice: buildVoice(opts.voiceId),
     transcriber: buildTranscriber(),
     startSpeakingPlan: buildStartSpeakingPlan(),
     stopSpeakingPlan: buildStopSpeakingPlan(),

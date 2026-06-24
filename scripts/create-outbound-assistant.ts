@@ -45,7 +45,10 @@ async function main() {
     console.warn("ℹ️  TRANSFER_PHONE_NUMBER not set — the transferToHuman tool will be omitted.\n");
   }
 
-  const config = buildOutboundAssistantConfig();
+  // Honor the voice chosen in the dashboard (falls back to ELEVENLABS_VOICE_ID).
+  const { getOutboundVoiceId } = await import("../src/outbound/voice.ts");
+  const voiceId = await getOutboundVoiceId();
+  const config = buildOutboundAssistantConfig({ voiceId });
 
   if (env.outboundAssistantId) {
     console.log(`Updating outbound assistant ${env.outboundAssistantId}…`);

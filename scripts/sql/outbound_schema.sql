@@ -246,6 +246,17 @@ begin
   create policy "dashboard read code_reference" on outbound.code_reference for select using (true);
 exception when duplicate_object then null; end $$;
 
+-- ---------------------------------------------------------------------------
+-- app_setting — small key/value store for runtime config the dashboard can
+-- change (e.g. the selected outbound ElevenLabs voice id). Written by the
+-- backend (service role); the env values remain the fallback defaults.
+-- ---------------------------------------------------------------------------
+create table if not exists outbound.app_setting (
+  key         text primary key,
+  value       text,
+  updated_at  timestamptz not null default now()
+);
+
 -- ===========================================================================
 -- API role grants — REQUIRED for PostgREST / supabase-js to reach this schema.
 --

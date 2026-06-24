@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@elevenlabs/react": "^1.8.0",
     "@supabase/supabase-js": "^2.45.4",
     "next": "^14.2.5",
     "react": "^18.3.1",

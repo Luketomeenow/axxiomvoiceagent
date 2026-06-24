@@ -37,6 +37,19 @@ export interface BrandInfo {
   count: number;
 }
 
+export interface VoiceOption {
+  voiceId: string;
+  name: string;
+  category?: string;
+  previewUrl?: string;
+}
+
+export interface VoicesResponse {
+  voices: VoiceOption[];
+  current: string;
+  error?: string;
+}
+
 export interface TestCallBody {
   phone: string;
   name?: string;
@@ -56,6 +69,15 @@ export const api = {
   callNow: (leadId: string) => post(`/outbound/call-now/${leadId}`),
   endCall: (callId: string) => post(`/outbound/calls/${callId}/end`),
   testCall: (body: TestCallBody) => post("/outbound/test-call", body),
+  getVoices: async (): Promise<VoicesResponse> => {
+    const res = await fetch(`${API_BASE}/outbound/voices`);
+    return res.json();
+  },
+  setVoice: (voiceId: string) => post("/outbound/voice", { voiceId }),
+  elAgentSignedUrl: async (): Promise<{ ok: boolean; signedUrl?: string; agentId?: string; error?: string }> => {
+    const res = await fetch(`${API_BASE}/outbound/el-agent/signed-url`);
+    return res.json();
+  },
   importPreview: (file: File): Promise<{ sheets?: SheetInfo[]; suggested?: string | null; error?: string }> => {
     const form = new FormData();
     form.append("file", file);

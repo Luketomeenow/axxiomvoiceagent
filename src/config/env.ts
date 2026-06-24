@@ -61,6 +61,12 @@ export const env = {
 
   // Voice + LLM
   elevenLabsVoiceId: str("ELEVENLABS_VOICE_ID"),
+  // Optional: lets the dashboard list your ElevenLabs account voices to switch
+  // between them. The voice itself is keyed in the Vapi dashboard for calls;
+  // this key is only used to fetch the voice catalog + previews.
+  elevenLabsApiKey: str("ELEVENLABS_API_KEY"),
+  // POC: an ElevenLabs Conversational AI agent to evaluate side-by-side with Vapi.
+  elevenLabsAgentId: str("ELEVENLABS_AGENT_ID"),
   anthropicApiKey: str("ANTHROPIC_API_KEY"),
   anthropicModel: str("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
   enableTranscriptAnalysis: bool("ENABLE_TRANSCRIPT_ANALYSIS", false),

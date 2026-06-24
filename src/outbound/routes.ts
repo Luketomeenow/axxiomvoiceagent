@@ -6,6 +6,8 @@
  *   POST /outbound/campaign/pause     pause campaigns + stop the worker
  *   POST /outbound/campaign/:id/update   rename / re-region a campaign
  *   POST /outbound/campaign/:id/delete   delete a campaign + its leads
+ *   GET  /outbound/voices             list ElevenLabs voices + current selection
+ *   POST /outbound/voice              switch the outbound assistant's voice
  *   POST /outbound/call-now/:leadId   manually dial one lead
  *   POST /outbound/test-call          dial an arbitrary number to test the agent
  *   GET  /outbound/export             download leads as csv/xlsx by disposition
@@ -19,6 +21,7 @@ import { log } from "../lib/logger.ts";
 import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
 import { db } from "./db.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
+import { getOutboundVoiceId, listElevenLabsVoices, setOutboundVoice } from "./voice.ts";
 
 export const outbound = new Hono();
 
@@ -108,6 +111,42 @@ outbound.post("/outbound/campaign/:id/delete", async (c) => {
   if (error) return c.json({ ok: false, error: error.message }, 500);
   log.info("Campaign deleted", { campaignId: id });
   return c.json({ ok: true });
+});
+
+// POC: issue a signed URL so the dashboard can talk to the ElevenLabs agent in
+// the browser (mic) without exposing the API key. Lets you A/B it against Vapi.
+outbound.get("/outbound/el-agent/signed-url", async (c) => {
+  const { env } = await import("../config/env.ts");
+  if (!env.elevenLabsApiKey) return c.json({ ok: false, error: "ELEVENLABS_API_KEY not set" }, 400);
+  if (!env.elevenLabsAgentId) return c.json({ ok: false, error: "ELEVENLABS_AGENT_ID not set" }, 400);
+  const res = await fetch(
+    `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${env.elevenLabsAgentId}`,
+    { headers: { "xi-api-key": env.elevenLabsApiKey } },
+  );
+  if (!res.ok) return c.json({ ok: false, error: `ElevenLabs ${res.status}` }, 502);
+  const json = (await res.json()) as { signed_url?: string };
+  return c.json({ ok: true, agentId: env.elevenLabsAgentId, signedUrl: json.signed_url });
+});
+
+// List ElevenLabs voices + the currently-selected outbound voice (for the picker).
+outbound.get("/outbound/voices", async (c) => {
+  const current = await getOutboundVoiceId();
+  try {
+    const voices = await listElevenLabsVoices();
+    return c.json({ voices, current });
+  } catch (err) {
+    // No EL key / fetch failed — still return the current id so the UI can show it.
+    return c.json({ voices: [], current, error: String(err) });
+  }
+});
+
+// Switch the outbound assistant's ElevenLabs voice (persist + live PATCH Vapi).
+outbound.post("/outbound/voice", async (c) => {
+  const body = await c.req.json<{ voiceId?: string }>().catch(() => ({}) as { voiceId?: string });
+  if (!body.voiceId) return c.json({ ok: false, error: "voiceId is required" }, 400);
+  const result = await setOutboundVoice(body.voiceId);
+  log.info("Voice switch requested", { voiceId: body.voiceId, ok: result.ok });
+  return c.json(result, result.ok ? 200 : 400);
 });
 
 outbound.post("/outbound/call-now/:leadId", async (c) => {
