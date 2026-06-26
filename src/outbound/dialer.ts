@@ -18,6 +18,15 @@ import { toE164 } from "./phone.ts";
 import { getBrand } from "../assistant/brands.ts";
 import { getBrandAssistantId } from "./brandStore.ts";
 
+/** Resolve a brand slug → its assistant id + caller-ID number (empty if unknown). */
+async function brandRoutingBySlug(slug?: string | null): Promise<{ assistantId?: string; phoneNumberId?: string }> {
+  const s = slug?.trim();
+  if (!s) return {};
+  const brand = getBrand(s);
+  if (!brand) return {};
+  return { assistantId: (await getBrandAssistantId(s)) || undefined, phoneNumberId: brand.vapiPhoneNumberId };
+}
+
 /**
  * Resolve which brand assistant + caller-ID to dial with, from the lead's
  * campaign brand. Falls back to the env default assistant/number when a campaign
@@ -26,11 +35,7 @@ import { getBrandAssistantId } from "./brandStore.ts";
 async function brandRoutingFor(campaignId: string | null): Promise<{ assistantId?: string; phoneNumberId?: string }> {
   if (!campaignId) return {};
   const { data } = await db().from("campaign").select("brand").eq("id", campaignId).maybeSingle();
-  const slug = (data?.brand as string | undefined)?.trim();
-  if (!slug) return {};
-  const brand = getBrand(slug);
-  if (!brand) return {};
-  return { assistantId: (await getBrandAssistantId(slug)) || undefined, phoneNumberId: brand.vapiPhoneNumberId };
+  return brandRoutingBySlug(data?.brand as string | undefined);
 }
 
 const VAPI_API = "https://api.vapi.ai";
@@ -319,6 +324,7 @@ export interface TestCallInput {
   city?: string;
   problemType?: string;
   violationCodes?: string;
+  brand?: string; // optional brand slug → test that brand's agent (voice + caller ID)
 }
 
 /**
@@ -355,7 +361,17 @@ export async function testCall(input: TestCallInput): Promise<DialResult> {
     violationCount: "0",
   };
 
-  return dispatchCall({ phone, variableValues, metadata: { kind: "test" } });
+  // If a brand is chosen, test THAT brand's agent (its assistant = voice + prompt)
+  // and dial from its caller ID; otherwise the env-default outbound assistant.
+  const routing = await brandRoutingBySlug(input.brand);
+
+  return dispatchCall({
+    phone,
+    variableValues,
+    metadata: { kind: "test", brand: input.brand ?? null },
+    assistantId: routing.assistantId,
+    phoneNumberId: routing.phoneNumberId,
+  });
 }
 
 // --- Campaign worker -------------------------------------------------------

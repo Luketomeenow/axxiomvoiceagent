@@ -1,17 +1,23 @@
 "use client";
 
-import { useState } from "react";
-import { api, type TestCallBody } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { api, type BrandInfoOption, type TestCallBody } from "@/lib/api";
 
 /**
  * Place a test call to any number so you can hear the outbound agent live.
+ * Pick which brand agent to test (its voice + caller ID), or the default.
  * The call streams into the monitor below like any other. Still DNC-checked.
  */
 export function TestAgentCard() {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<TestCallBody>({ phone: "" });
+  const [brands, setBrands] = useState<BrandInfoOption[]>([]);
   const [result, setResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.brandList().then(setBrands).catch(() => {});
+  }, []);
 
   function set<K extends keyof TestCallBody>(key: K, value: string) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -48,6 +54,21 @@ export function TestAgentCard() {
       {open && (
         <div className="mt-4 space-y-3">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="block">
+              <span className="label">Agent</span>
+              <select
+                value={form.brand ?? ""}
+                onChange={(e) => set("brand", e.target.value)}
+                className="field mt-1 w-full"
+              >
+                <option value="">Default outbound agent</option>
+                {brands.map((b) => (
+                  <option key={b.slug} value={b.slug}>
+                    {b.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
             <Input label="Phone (required)" value={form.phone} onChange={(v) => set("phone", v)} placeholder="+1 415 555 0123" />
             <Input label="Contact name" value={form.name ?? ""} onChange={(v) => set("name", v)} placeholder="Jordan" />
             <Input label="Building name" value={form.buildingName ?? ""} onChange={(v) => set("buildingName", v)} placeholder="Market St Tower" />

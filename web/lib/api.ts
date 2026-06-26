@@ -66,6 +66,7 @@ export interface TestCallBody {
   city?: string;
   problemType?: string;
   violationCodes?: string;
+  brand?: string; // optional brand slug → test that brand's agent (voice + caller ID)
 }
 
 export const api = {
