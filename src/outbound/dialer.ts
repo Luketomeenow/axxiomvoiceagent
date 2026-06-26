@@ -304,6 +304,13 @@ export async function endCall(callRowId: string): Promise<DialResult> {
     return { ok: false, reason, callRowId };
   }
 
+  // Mark it ended immediately so it leaves the live monitor even if Vapi's
+  // end-of-call webhook is delayed or never arrives.
+  await db()
+    .from("call")
+    .update({ status: "ended", ended_reason: "ended-by-operator", ended_at: new Date().toISOString() })
+    .eq("id", callRowId);
+
   await recordEvent({
     call_id: callRowId,
     vapi_call_id: (call.vapi_call_id as string) ?? undefined,

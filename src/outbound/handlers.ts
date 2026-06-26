@@ -19,10 +19,14 @@ import {
   type VapiToolResults,
 } from "../vapi/types.ts";
 
-/** Is this server message for an outbound campaign call? */
+/** Is this server message for an outbound call? Covers campaign + test calls
+ *  on the default OR any per-brand assistant (we tag both via metadata.kind). */
 export function isOutboundCall(message: VapiMessage): boolean {
   const meta = callMetadata(message);
-  if (meta.kind === "outbound") return true;
+  // Every call we place (campaign or test, default or brand assistant) is tagged.
+  if (meta.kind === "outbound" || meta.kind === "test") return true;
+  // Belt-and-suspenders: a callRowId in metadata means we created the call row.
+  if (typeof meta.callRowId === "string") return true;
   const assistantId = message.call?.assistantId ?? message.assistantId;
   return !!env.outboundAssistantId && assistantId === env.outboundAssistantId;
 }
