@@ -38,10 +38,13 @@ All config is read through `src/config/env.ts`. **The server boots even with mis
 |-------|------|
 | Server | `PORT`, `SERVER_URL` |
 | Vapi | `VAPI_API_KEY`, `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, `VAPI_SERVER_SECRET` |
-| Outbound | `OUTBOUND_ASSISTANT_ID`, `OUTBOUND_TIMEZONE`, `CALL_WINDOW_START`/`END`, `MAX_CONCURRENT_CALLS`, `MAX_CALL_ATTEMPTS` |
+| Outbound | `OUTBOUND_ASSISTANT_ID` (env-default/fallback assistant), `OUTBOUND_TIMEZONE`, `CALL_WINDOW_START`/`END`, `MAX_CONCURRENT_CALLS`, `MAX_CALL_ATTEMPTS`, `ENABLE_VOICEMAIL_DETECTION` |
 | GoHighLevel | `GHL_ACCESS_TOKEN`, `GHL_LOCATION_ID`, `GHL_CALENDAR_ID`, `GHL_PIPELINE_ID`, `GHL_PIPELINE_STAGE_ID`, `GHL_TIMEZONE` |
 | Transfer / safety | `TRANSFER_PHONE_NUMBER`, `EMERGENCY_INSTRUCTION` |
 | Voice + LLM | `ELEVENLABS_VOICE_ID`, `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `ENABLE_TRANSCRIPT_ANALYSIS` |
+| ElevenLabs (optional) | `ELEVENLABS_API_KEY` (dashboard voice list + Convai POC), `ELEVENLABS_AGENT_ID` (the Convai POC agent) — see [voices.md](voices.md) |
+
+> **Per-brand agents** (caller IDs, voices) are configured in code (`src/assistant/brands.ts`), not env. See [brands.md](brands.md).
 | Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `VOICE_CALL_TABLE` |
 | Business (prompt) | `COMPANY_NAME`, `AGENT_NAME`, `SERVICE_AREA`, `BUSINESS_HOURS`, `BOOKING_TYPE` |
 
@@ -65,10 +68,16 @@ The dashboard reads with the **anon** key (read-only RLS policies); all writes g
 
 1. Add your ElevenLabs key in Vapi → Provider Keys.
 2. `bun run create-assistant` → creates the **inbound** assistant, prints `VAPI_ASSISTANT_ID` (put it in `.env`). Set `VAPI_PHONE_NUMBER_ID` and re-run to attach the number.
-3. `bun run create-outbound-assistant` → creates the **outbound** assistant, prints `OUTBOUND_ASSISTANT_ID` (put it in `.env`).
-4. Point your inbound / CallRail tracking number at the inbound Vapi number.
+3. `bun run create-outbound-assistant` → creates the generic/fallback **outbound** assistant, prints `OUTBOUND_ASSISTANT_ID` (put it in `.env`).
+4. `bun run create-brand-assistants` → creates/updates **one assistant per brand** from `src/assistant/brands.ts` (ids stored in the DB). See [brands.md](brands.md).
+5. (Optional) `bun run create-convai-agent` → the ElevenLabs Conversational AI **evaluation POC**. See [voices.md](voices.md).
+6. Point your inbound / CallRail tracking number at the inbound Vapi number.
 
-> Re-run the `create-*-assistant` scripts whenever you change a prompt or a tool (`src/assistant/**`) — they PATCH the existing assistant when its id is set, otherwise POST a new one.
+> Re-run the `create-*` scripts whenever you change a prompt, tool, voice, or brand (`src/assistant/**`, `brands.ts`) — they PATCH the existing assistant when its id is known, otherwise POST a new one.
+
+### Other scripts
+- `bun run import-leads <file.xlsx> --region "…" [--campaign "…"]` — import a region's leads (one campaign per region).
+- `bun run import-codes [scripts/seed/ca_elevator_compliance.csv]` — seed the violation-code knowledge base.
 
 ## Deploy (Railway)
 
@@ -91,4 +100,14 @@ npm run dev                        # serves on :3001; backend runs on :3000
 |-----|---------|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | **anon** key (read + Realtime only) |
-| `NEXT_PUBLIC_API_BASE` | Backend base URL (default `http://localhost:3000`) |
+| `NEXT_PUBLIC_API_BASE` | Backend base URL (default `http://localhost:3000`; in prod, the Railway URL) |
+
+### Deploy the dashboard (Netlify)
+
+The dashboard deploys to **Netlify**; the **backend stays on Railway** (Netlify can't host the persistent Bun webhook + dialer worker). Config lives in `netlify.toml` (root): `base = "web"`, `npm run build`, Node 20, and the official `@netlify/plugin-nextjs` runtime.
+
+1. Netlify → **Add new site → Import from Git**, pick this repo. `netlify.toml` already points the build at `web/` — no manual build settings needed.
+2. **Site settings → Environment variables** — add the three `NEXT_PUBLIC_*` vars above. Set **`NEXT_PUBLIC_API_BASE` to your Railway backend URL** (not localhost).
+3. Deploy. The backend already allows CORS on `/outbound/*`, so the Netlify-hosted dashboard can call it.
+
+> These are `NEXT_PUBLIC_*` (inlined at build time) — after changing any of them in Netlify, trigger a **redeploy**.

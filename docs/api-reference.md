@@ -19,9 +19,19 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 | `GET` | `/outbound/stats` | `?campaignId=` (optional) | Disposition breakdown + total, scoped to a campaign when given. |
 | `POST` | `/outbound/campaign/start` | `{ campaignId? }` | Mark campaign(s) `running` and start the worker. Omit `campaignId` to start all non-`done`. |
 | `POST` | `/outbound/campaign/pause` | `{ campaignId? }` | Mark campaign(s) `paused` and stop the worker. |
+| `POST` | `/outbound/campaign/:id/update` | `{ name?, region?, brand? }` | Rename / re-region / assign a brand. Assigning a brand also sets the campaign `timezone` from the brand. |
+| `POST` | `/outbound/campaign/:id/delete` | path `id` | Delete a campaign **and all its leads** (calls/events cascade). |
+| `GET` | `/outbound/brand-list` | — | The brands available to assign to a campaign (`slug`, `displayName`, `serviceArea`). |
 | `POST` | `/outbound/call-now/:leadId` | path `leadId` | Manually dial one existing lead now (ignores the calling window, still honors DNC). |
+| `POST` | `/outbound/calls/:id/end` | path `id` | End an in-flight call from the dashboard (uses Vapi's per-call control URL). |
 | `POST` | `/outbound/test-call` | `{ phone, name?, buildingName?, address?, city?, problemType?, violationCodes? }` | Dial an **arbitrary** number to test the agent — no lead row. DNC-checked. |
-| `GET` | `/outbound/export` | `?disposition=&campaignId=&format=csv\|xlsx` | Download leads as CSV/XLSX. `disposition` accepts a comma-separated list (e.g. `qualified,needs_followup`); omit for all. |
+| `POST` | `/outbound/import/preview` | multipart `file` | List a workbook's sheets + row counts; suggests the campaign-ready sheet. |
+| `POST` | `/outbound/import` | multipart `file`, `sheet`, `region?`, `campaign?` | Import leads from an uploaded workbook (dashboard upload path). |
+| `GET` | `/outbound/brands` | `?campaignId=` | Distinct `servicing_brand` values in the leads (for the export brand filter). |
+| `GET` | `/outbound/voices` | — | ElevenLabs voices + each agent's current voice `{ vapi, elevenlabs }`. Needs `ELEVENLABS_API_KEY`. |
+| `POST` | `/outbound/voice` | `{ voiceId, target: "vapi"\|"elevenlabs" }` | Set + apply a voice to one agent (independent per target). |
+| `GET` | `/outbound/el-agent/signed-url` | — | Signed URL to talk to the ElevenLabs Convai POC agent in-browser (key stays server-side). |
+| `GET` | `/outbound/export` | `?disposition=&campaignId=&brand=&format=csv\|xlsx` | Download leads as CSV/XLSX. `disposition` accepts a comma-separated list; omit for all. |
 
 **`DialResult`** (returned by `call-now` and `test-call`): `{ ok: boolean, reason?: string, vapiCallId?: string, callRowId?: string }` — HTTP 200 when `ok`, else 400.
 

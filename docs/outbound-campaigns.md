@@ -42,6 +42,10 @@ Pick the region in the dashboard's **Region / campaign** selector and hit **Star
 
 The calling window, concurrency, and max attempts come from the campaign row (falling back to env defaults: `CALL_WINDOW_START`/`END`, `MAX_CONCURRENT_CALLS`, `MAX_CALL_ATTEMPTS`, `OUTBOUND_TIMEZONE`).
 
+### Assign a brand (caller ID + voice + compliance + timezone)
+
+In the **Campaign controls** card, set the campaign's **"Brand agent + caller ID"** dropdown. The dialer then routes that campaign's calls to the brand's **own assistant + local caller-ID number**, and the campaign's calling-hours `timezone` is set from the brand. Without a brand, the campaign uses the generic env-default assistant + number. Full detail: **[brands.md](brands.md)**.
+
 ---
 
 ## 2. Accuracy & value — what's wrong with their elevator
@@ -127,8 +131,10 @@ To hear the live outbound agent before (or during) a campaign, use the **"Test t
 
 These live in `src/outbound/dialer.ts` and the handlers, so they apply to the worker, "call now," and test calls:
 
-- **Calling window** (TCPA 8am–9pm in the lead's timezone) — the worker won't dial outside it. "Call now" and test calls bypass the *window* (operator discretion) but **not** DNC.
+- **Calling window** (TCPA 8am–9pm in the campaign's timezone — set from the brand) — the worker won't dial outside it. "Call now" and test calls bypass the *window* (operator discretion) but **not** DNC.
+- **All-party consent** — every brand agent requires explicit recorded-line consent before qualifying (safest posture; see [compliance.md](compliance.md)).
 - **DNC suppression** — `outbound.dnc_suppression` is checked before every dial; `optOut` adds the number and marks the lead `dnc`.
+- **Prompt guardrails** — the agent stays on scope, resists manipulation/prompt-injection, gives no legal/financial advice, never collects sensitive PII, and disengages on hostility.
 - **Append-only audit** — every status change, transcript line, tool call, consent moment, and code lookup is written to `outbound.call_event`.
 
-See [compliance.md](compliance.md) for the full CA checklist and open legal items.
+See [compliance.md](compliance.md) for the per-brand checklist, guardrails, and open legal items.

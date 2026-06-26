@@ -8,9 +8,14 @@ share one service: an **inbound** triage agent and an **outbound** qualification
 campaign.
 
 > 📚 **Full documentation lives in [`docs/`](docs/README.md)** — setup, the
-> inbound agent, outbound campaigns (regions, code lookup, sales handoff, test
-> calls), the API reference, the database schema, and compliance. This README is
-> the quick tour; `docs/` is the detail.
+> [per-brand agents](docs/brands.md), [voices & the ElevenLabs POC](docs/voices.md),
+> the inbound agent, outbound campaigns, the API reference, the database schema,
+> and [compliance + guardrails](docs/compliance.md). This README is the quick
+> tour; `docs/` is the detail.
+
+> The outbound campaign runs a **separate customized agent per Axxiom brand**
+> (Quality, Motion, Liftech, Axxiom FL, Arizona, AmeriTex) — each with its own
+> local caller ID, voice, and state compliance. See [docs/brands.md](docs/brands.md).
 
 ## Inbound agent
 
@@ -130,9 +135,11 @@ Worker / call-now / test-call ─POST /call─▶ Vapi ─status/transcript/tool
 Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, test-call, export─ Hono API
 ```
 
-- **Outbound assistant** — `src/assistant/outbound/` (qualification prompt,
-  compliant first-message disclosure, tools `qualifyLead`, `recordDisposition`,
-  `optOut`, `lookupViolationCode`, `transferToHuman`).
+- **Per-brand assistants** — `src/assistant/brands.ts` registry → `bun run create-brand-assistants`
+  generates one Vapi assistant per brand; the dialer routes a campaign's calls to its brand's
+  assistant + caller ID. (`src/assistant/outbound/` holds the shared prompt/tools/config.)
+- **Outbound assistant** — qualification prompt, compliant first-message disclosure, tools
+  `qualifyLead`, `recordDisposition`, `optOut`, `lookupViolationCode`, `transferToHuman`.
 - **Dialer + worker** — `src/outbound/dialer.ts` (Vapi `POST /call`, calling-window
   + DNC guards, concurrency cap, manual "call now", arbitrary-number test calls).
 - **Webhook handlers** — `src/outbound/handlers.ts` (branch outbound vs inbound,

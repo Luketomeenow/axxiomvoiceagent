@@ -1,0 +1,18 @@
+# Netlify config for the Axxiom dashboard — the Next.js app in web/.
+#
+# NOTE: only the DASHBOARD deploys to Netlify. The backend (the Hono/Bun Vapi
+# webhook + the always-on outbound dialer worker) is a persistent server and
+# CANNOT run on Netlify — it stays on Railway. The dashboard reaches it via the
+# NEXT_PUBLIC_API_BASE env var (set to the Railway URL) and Supabase directly.
+
+[build]
+  # The Next app is in the web/ subdirectory.
+  base = "web"
+  command = "npm run build"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# Netlify's official Next.js runtime (SSR/app-router, image opt, etc.).
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

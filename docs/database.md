@@ -12,7 +12,8 @@ Accessed by the backend with the service-role key (default schema set to `outbou
 
 ### `campaign`
 A named run over a region's leads, with calling guardrails.
-`id, name, region, segment, status (draft|running|paused|done), timezone, call_window_start, call_window_end, max_concurrent, max_attempts, created_at, updated_at`.
+`id, name, region, brand, segment, status (draft|running|paused|done), timezone, call_window_start, call_window_end, max_concurrent, max_attempts, created_at, updated_at`.
+- `brand` = a brand slug (see [brands.md](brands.md)); routes the campaign's calls to that brand's assistant + caller ID. Assigning it also sets `timezone` from the brand.
 
 ### `lead`
 One row per imported device/contact. Grouped by `campaign_id`; unique on `(device_id, contact_phone)`.
@@ -35,8 +36,15 @@ Append-only live feed + compliance audit: `call_id, vapi_call_id, type (status-u
 Numbers never to dial: `phone (E.164, pk), reason, source (caller_request | manual | imported), created_at`.
 
 ### `code_reference`
-Curated, authoritative violation codes the agent's `lookupViolationCode` reads from. Seeded via `bun run import-codes`.
+Curated, authoritative violation codes + compliance topics the agent's `lookupViolationCode` reads from. Seeded via `bun run import-codes`.
 `code (pk, normalized), jurisdiction, title, plain_summary, severity, typical_remedy, source_url, created_at, updated_at`.
+
+### `app_setting`
+Small key/value store for runtime config the dashboard/scripts change. Keys in use:
+- `brand_assistant:<slug>` → that brand's Vapi assistant id (written by `create-brand-assistants`).
+- `brand_voice:<slug>` → a brand's chosen voice (optional override).
+- `vapi_voice_id` / `elevenlabs_voice_id` → the env-default Vapi / Convai POC voices (the dashboard voice picker).
+`key (pk), value, updated_at`.
 
 ## Realtime & RLS
 

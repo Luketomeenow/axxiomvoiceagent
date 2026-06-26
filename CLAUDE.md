@@ -23,9 +23,11 @@ bun run start        # production server
 bun run typecheck    # tsc --noEmit — run this to validate changes
 
 bun run create-assistant            # create/update inbound Vapi assistant
-bun run create-outbound-assistant   # create/update outbound assistant
+bun run create-outbound-assistant   # create/update the generic/fallback outbound assistant
+bun run create-brand-assistants     # create/update one Vapi assistant per brand (brands.ts)
+bun run create-convai-agent         # ElevenLabs Conversational AI evaluation POC
 bun run import-leads <f> --region X  # seed outbound.lead for a region (one campaign per region)
-bun run import-codes <f>             # seed outbound.code_reference (verified violation codes)
+bun run import-codes <f>             # seed outbound.code_reference (codes + compliance topics)
 
 # Node fallbacks (no Bun): npm install, then *:node variants
 npm run import-leads:node
@@ -40,16 +42,16 @@ There are **no automated tests** and **no linter** configured. `bun run typechec
 src/
   index.ts            Hono server: /health, /vapi/webhook, mounts outbound routes
   config/env.ts       All env access; assert* helpers; boots even when keys missing
-  assistant/          Inbound: prompt, tools, Vapi assistant config
-    outbound/         Outbound: qualification prompt, compliant disclosure, tools
+  assistant/          Inbound prompt/tools/config; brands.ts (6-brand registry); voicePipeline.ts
+    outbound/         Outbound: qualification prompt, compliant disclosure, tools, config
   vapi/               Inbound webhook types + handlers (tool dispatch, end-of-call)
-  outbound/           routes.ts (API), handlers.ts, dialer.ts, db.ts, phone.ts
+  outbound/           routes.ts (API), handlers.ts, dialer.ts, db.ts, phone.ts, voice.ts, brandStore.ts
   ghl/                GoHighLevel client + domain ops
   supabase/           ax_voice_call writer
   ai/                 Optional post-call Claude transcript analysis
 scripts/
-  create-assistant.ts, create-outbound-assistant.ts, import-leads.ts, import-codes.ts
-  sql/                ax_voice_call.sql, outbound_schema.sql
+  create-assistant.ts, create-outbound-assistant.ts, create-brand-assistants.ts, import-leads.ts, import-codes.ts
+  elevenlabs/create-convai-agent.ts; seed/ (code KB); sql/ (ax_voice_call.sql, outbound_schema.sql)
 web/                  Next.js + Tailwind dashboard (region selector, monitor, leads, test-call, export)
 data/                 Lead workbooks + code lists (PII) — gitignored, never committed
 docs/                 Full documentation (see docs/README.md)

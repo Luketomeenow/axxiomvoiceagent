@@ -22,7 +22,7 @@ import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, ty
 import { db } from "./db.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
-import { BRANDS } from "../assistant/brands.ts";
+import { BRANDS, getBrand } from "../assistant/brands.ts";
 
 export const outbound = new Hono();
 
@@ -96,7 +96,14 @@ outbound.post("/outbound/campaign/:id/update", async (c) => {
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
   if (typeof body.region === "string") patch.region = body.region.trim() || null;
-  if (typeof body.brand === "string") patch.brand = body.brand.trim() || null;
+  if (typeof body.brand === "string") {
+    const slug = body.brand.trim();
+    patch.brand = slug || null;
+    // Assigning a brand also sets the campaign's calling-hours timezone to that
+    // brand's region, so the dialer dials within the right local TCPA window.
+    const brand = slug ? getBrand(slug) : undefined;
+    if (brand) patch.timezone = brand.timezone;
+  }
   if (!("name" in patch) && !("region" in patch) && !("brand" in patch)) {
     return c.json({ ok: false, error: "nothing to update" }, 400);
   }

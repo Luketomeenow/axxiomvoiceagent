@@ -35,6 +35,14 @@ export function buildVoice(voiceId?: string) {
 }
 
 /**
+ * Vapi's native voices — no external credential, lowest latency, and the V2 model
+ * for a more human, consistent sound. Used by the per-brand assistants.
+ */
+export function buildVapiVoice(voiceId: string) {
+  return { provider: "vapi" as const, voiceId, version: 2 };
+}
+
+/**
  * Deepgram nova-3 — latest, low-latency, accurate. `keyterm` boosts recall of
  * our domain vocabulary (proper nouns + jargon the model otherwise mishears),
  * which is the biggest lever for "the bot can't hear me" on real phone audio.

@@ -15,6 +15,7 @@ import {
   buildStartSpeakingPlan,
   buildStopSpeakingPlan,
   buildTranscriber,
+  buildVapiVoice,
   buildVoice,
 } from "../voicePipeline.ts";
 import { buildOutboundFirstMessage, buildOutboundSystemPrompt } from "./prompt.ts";
@@ -42,9 +43,13 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
       tools: buildOutboundTools(toE164(brand.localPhone) ?? undefined),
     },
 
-    // Shared low-latency pipeline (Flash v2.5 voice, nova-3, smart endpointing).
-    // Per-brand voice (dashboard override) wins over the brand registry default.
-    voice: buildVoice(opts.voiceId ?? brand.voiceId),
+    // Per-brand voice. Brands use Vapi's native voices (no external credential,
+    // lowest latency); the env-default/fallback brand stays on ElevenLabs.
+    // A dashboard override (opts.voiceId) wins over the registry default.
+    voice:
+      brand.voiceProvider === "11labs"
+        ? buildVoice(opts.voiceId ?? brand.voiceId)
+        : buildVapiVoice(opts.voiceId ?? brand.voiceId ?? "Elliot"),
     transcriber: buildTranscriber(),
     startSpeakingPlan: buildStartSpeakingPlan(),
     stopSpeakingPlan: buildStopSpeakingPlan(),

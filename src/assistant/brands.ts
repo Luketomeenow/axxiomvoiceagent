@@ -35,9 +35,11 @@ export interface Brand {
   since?: string;
   positioning: string; // one-line brand promise
   valueProps: string[]; // talking points for the prompt
-  consentPosture: ConsentPosture;
+  consentPosture: ConsentPosture; // policy: all-party everywhere (safest)
+  timezone: string; // IANA tz for this brand's region → drives TCPA calling hours
   complianceNote: string; // state-specific, drafted — verify with counsel
-  voiceId?: string; // ElevenLabs voice (optional; tunable in dashboard)
+  voiceProvider?: "vapi" | "11labs"; // "vapi" = native voice (default for brands); "11labs" = ElevenLabs voiceId
+  voiceId?: string; // voice id/name for the provider above (tunable in dashboard)
   vapiPhoneNumberId?: string; // Vapi caller-ID number to dial FROM (fill in)
   assistantId?: string; // set after create-brand-assistants (or stored in DB)
 }
@@ -46,7 +48,8 @@ export const BRANDS: Brand[] = [
   {
     slug: "quality",
     vapiPhoneNumberId: "a873e36d-7cdd-4715-bdf8-8ac2d75a447d",
-    voiceId: "cjVigY5qzO86Huf0OWal", // Eric — smooth, trustworthy (premade; tune in dashboard)
+    voiceProvider: "vapi",
+    voiceId: "Clara", // Vapi native — warm, professional (Mid-Atlantic polish)
     displayName: "Quality Elevator",
     legalName: "Quality Elevator, an Axxiom Elevator Company",
     agentName: "Alex",
@@ -62,13 +65,15 @@ export const BRANDS: Brand[] = [
       "complete code compliance & safety",
       "solutions for healthcare, hospitality, education, and more",
     ],
-    consentPosture: "all-party", // MD is a two-party-consent state
-    complianceNote: "MD requires all-party recording consent; disclose recording + AI before substantive talk.",
+    consentPosture: "all-party", // MD two-party; all-party everywhere is our policy
+    timezone: "America/New_York",
+    complianceNote: "MD all-party recording consent (DC/VA one-party); TCPA + state calling hours 8am–9pm ET; disclose AI + recorded line up front.",
   },
   {
     slug: "motion",
     vapiPhoneNumberId: "3bd5c212-3ce9-45db-9bab-f2c070756062",
-    voiceId: "iP95p4xoKVk53GoZ742B", // Chris — charming, down-to-earth
+    voiceProvider: "vapi",
+    voiceId: "Layla", // Vapi native — warm, bright, cheerful (South FL)
     displayName: "Motion Elevator",
     legalName: "Motion Elevator, Inc., an Axxiom Elevator Company",
     agentName: "Alex",
@@ -84,13 +89,15 @@ export const BRANDS: Brand[] = [
       "services all elevator brands",
       "unmatched code compliance & safety, competitive pricing",
     ],
-    consentPosture: "all-party", // FL is a two-party-consent state (§934.03)
-    complianceNote: "FL all-party recording consent + FTSA telemarketing rules; disclose recording + AI up front.",
+    consentPosture: "all-party", // FL two-party (§934.03)
+    timezone: "America/New_York",
+    complianceNote: "FL all-party recording consent (§934.03) + FTSA telemarketing/DNC; calling hours 8am–9pm ET; disclose AI + recorded line up front.",
   },
   {
     slug: "liftech",
     vapiPhoneNumberId: "42a14aec-ef5b-4e08-a516-686af3a40679",
-    voiceId: "bIHbv24MWmeRgasZH58o", // Will — relaxed optimist
+    voiceProvider: "vapi",
+    voiceId: "Sid", // Vapi native — laid-back, smooth, deep (SoCal)
     displayName: "Liftech Elevator Services",
     legalName: "Liftech Elevator Services, an Axxiom Elevator Company",
     agentName: "Alex",
@@ -105,13 +112,15 @@ export const BRANDS: Brand[] = [
       "services all elevator brands and models",
       "CA contractor license #808879",
     ],
-    consentPosture: "all-party", // CA: CIPA all-party consent + AB 2905 AI disclosure
-    complianceNote: "Strictest: CA all-party consent (CIPA §632/§632.7) + AB 2905 AI disclosure; TCPA 8am–9pm.",
+    consentPosture: "all-party", // CA two-party (CIPA)
+    timezone: "America/Los_Angeles",
+    complianceNote: "Strictest: CA all-party consent (CIPA §632/§632.7) + AB 2905 AI disclosure; TCPA + CA hours 8am–9pm PT.",
   },
   {
     slug: "axxiom-fl",
     vapiPhoneNumberId: "bf6a8555-a3e4-422f-9e80-f3f119c31565",
-    voiceId: "nPczCjzI2devNBz1zQrb", // Brian — deep, resonant, comforting
+    voiceProvider: "vapi",
+    voiceId: "Kai", // Vapi native — friendly, relaxed, approachable (FL)
     displayName: "Axxiom Elevator Florida",
     legalName: "Axxiom Elevator Florida",
     agentName: "Alex",
@@ -128,12 +137,14 @@ export const BRANDS: Brand[] = [
       "seamless, reliable, cost-effective solutions",
     ],
     consentPosture: "all-party", // FL two-party consent
-    complianceNote: "FL all-party recording consent + FTSA; the 2028 brake mandate is a strong, accurate hook.",
+    timezone: "America/New_York",
+    complianceNote: "FL all-party consent (§934.03) + FTSA; calling hours 8am–9pm ET; the 2028 brake mandate (A17.1-2019) is a strong, accurate hook.",
   },
   {
     slug: "arizona",
     vapiPhoneNumberId: "3581c39d-69bc-4f5e-bddb-85888bd43a34",
-    voiceId: "pqHfZKP75CvOlQylNhV4", // Bill — wise, mature, balanced
+    voiceProvider: "vapi",
+    voiceId: "Elliot", // Vapi native — professional, soothing, steady (AZ)
     displayName: "Arizona Elevator Solutions",
     legalName: "Arizona Elevator Solutions, an Axxiom Elevator Company",
     agentName: "Alex",
@@ -149,13 +160,15 @@ export const BRANDS: Brand[] = [
       "24/7 emergency response, all brands serviced",
       "union-backed (IUEC), competitive pricing",
     ],
-    consentPosture: "one-party", // AZ one-party recording; still disclose for trust
-    complianceNote: "AZ one-party consent; still disclose recording + AI. TCPA 8am–9pm local.",
+    consentPosture: "all-party", // AZ is one-party by law, but we use all-party everywhere (safest)
+    timezone: "America/Phoenix",
+    complianceNote: "AZ one-party by law, but we disclose + get consent anyway (all-party policy); AZ has no DST; calling hours 8am–9pm MST.",
   },
   {
     slug: "ameritex",
     vapiPhoneNumberId: "66c38638-c1d3-412e-a093-69d7219590b0",
-    voiceId: "onwK4e9ZLuTAKqWW03F9", // Daniel — steady broadcaster
+    voiceProvider: "vapi",
+    voiceId: "Savannah", // Vapi native — straightforward, Southern accent (Texas)
     displayName: "AmeriTex Elevator Services",
     legalName: "AmeriTex Elevator Services, Inc.",
     agentName: "Alex",
@@ -171,9 +184,10 @@ export const BRANDS: Brand[] = [
       "clear, competitive, no-surprises pricing",
       "best-in-class customer service across 9 industry verticals",
     ],
-    // Serves CA (Bay Area) too, so use the stricter all-party posture by default.
+    // Serves CA (Bay Area, two-party) + TX — all-party posture covers both.
     consentPosture: "all-party",
-    complianceNote: "TX one-party, but AmeriTex also serves CA (Bay Area) — use all-party consent to be safe; TX Ch. 302.",
+    timezone: "America/Chicago",
+    complianceNote: "TX one-party (Bus. & Com. Ch. 302 telemarketing) + CA Bay Area two-party (CIPA) — use all-party consent; calling hours 8am–9pm in the lead's local tz.",
   },
 ];
 
@@ -191,7 +205,9 @@ export function defaultBrand(): Brand {
     positioning: "Reliability in Motion",
     valueProps: ["24/7 emergency response", "services all elevator brands", "code compliance & safety"],
     consentPosture: "all-party",
+    timezone: env.outboundTimezone,
     complianceNote: "",
+    voiceProvider: "11labs",
     voiceId: env.elevenLabsVoiceId || undefined,
     vapiPhoneNumberId: env.vapiPhoneNumberId || undefined,
   };

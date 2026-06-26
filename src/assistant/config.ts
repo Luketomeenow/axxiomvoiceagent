@@ -12,7 +12,7 @@ import {
   buildStartSpeakingPlan,
   buildStopSpeakingPlan,
   buildTranscriber,
-  buildVoice,
+  buildVapiVoice,
 } from "./voicePipeline.ts";
 import { buildFirstMessage, buildSystemPrompt } from "./systemPrompt.ts";
 import { buildTools } from "./tools.ts";
@@ -36,8 +36,8 @@ export function buildAssistantConfig() {
       tools: buildTools(),
     },
 
-    // Shared low-latency pipeline (Flash v2.5 voice, nova-3, smart endpointing).
-    voice: buildVoice(),
+    // Vapi native voice (no external 11labs credential needed; lowest latency).
+    voice: buildVapiVoice("Elliot"),
     transcriber: buildTranscriber(),
     startSpeakingPlan: buildStartSpeakingPlan(),
     stopSpeakingPlan: buildStopSpeakingPlan(),
