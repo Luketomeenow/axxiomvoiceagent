@@ -9,6 +9,9 @@
   # The Next app is in the web/ subdirectory.
   base = "web"
   command = "npm run build"
+  # Next.js outputs to .next (relative to base → web/.next). The @netlify/plugin-nextjs
+  # runtime takes it from here. Must NOT be "dist" — Next doesn't produce a dist/ dir.
+  publish = ".next"
 
 [build.environment]
   NODE_VERSION = "20"
