@@ -608,8 +608,36 @@ async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
 
   for (const lead of leads) {
     const r = await placeCall(lead);
-    if (!r.ok) log.warn("Skipped lead", { leadId: lead.id, campaignId, reason: r.reason });
+    if (r.ok) continue;
+    log.warn("Skipped lead", { leadId: lead.id, campaignId, reason: r.reason });
+    // A systemic/account-level Vapi error (daily-number cap, billing, suspension)
+    // will reject EVERY call — so auto-pause this campaign instead of hammering
+    // the same lead each tick and burning the quota. The reason is logged + kept
+    // on the failed call rows for the operator.
+    if (isSystemicDialError(r.reason)) {
+      log.error("Systemic dial error — auto-pausing campaign", { campaignId, reason: r.reason });
+      await db()
+        .from("campaign")
+        .update({ status: "paused", updated_at: new Date().toISOString() })
+        .eq("id", campaignId);
+      return;
+    }
   }
+}
+
+/** True if a dial failure is account/telephony-level (will fail every call), not
+ *  specific to one lead — e.g. Vapi's daily outbound cap on Vapi-bought numbers. */
+function isSystemicDialError(reason?: string): boolean {
+  const s = (reason ?? "").toLowerCase();
+  return (
+    s.includes("daily outbound call limit") ||
+    s.includes("couldn't start call") ||
+    s.includes("subscriptionlimits") ||
+    s.includes("concurrencyblocked\":true") ||
+    s.includes("billing") ||
+    s.includes("insufficient") ||
+    s.includes("suspend")
+  );
 }
 
 export function startCampaignWorker(): void {

@@ -221,6 +221,11 @@ environment/config steps. Run through this before pressing **Start** on a real c
       `OUTBOUND_ASSISTANT_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Create assistants
       (`create-outbound-assistant`, `create-brand-assistants`); seed any known DNC numbers
       into `outbound.dnc_suppression`.
+- [ ] **Telephony — import your own Twilio/Telnyx numbers.** Vapi-*provided* numbers have a
+      **daily outbound-call cap** (you'll get `400 "Numbers Bought On Vapi Have A Daily Outbound
+      Call Limit"` once hit, and the campaign auto-pauses). For any real volume, import Twilio
+      (or Telnyx) numbers into Vapi, then set each brand's `vapiPhoneNumberId` in
+      `src/assistant/brands.ts` to the imported number and re-run `create-brand-assistants`.
 - [ ] **Start small**: `MAX_CONCURRENT_CALLS=1` and use **Calls this run** on the dashboard
       to dial a small first batch. Do one **test call**, confirm the disclosure plays, then
       check `outbound.v_compliance_audit` shows `disclosure_logged` + `consent_event` for it.
