@@ -15,7 +15,7 @@ import { assertOutbound, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
 import { checkSuppression, db, recordEvent, type LeadRow } from "./db.ts";
 import { toE164 } from "./phone.ts";
-import { getBrand } from "../assistant/brands.ts";
+import { type Brand, brandForState, brandByName, getBrand, resolveBrand } from "../assistant/brands.ts";
 import { getBrandAssistantId } from "./brandStore.ts";
 
 interface BrandRouting {
@@ -24,24 +24,96 @@ interface BrandRouting {
   brand?: string; // resolved brand slug (denormalized onto the call row)
 }
 
+/** A resolved brand → its assistant id + caller-ID number (empty if no brand). */
+async function routingForBrand(brand?: Brand): Promise<BrandRouting> {
+  if (!brand) return {};
+  return {
+    assistantId: (await getBrandAssistantId(brand.slug)) || undefined,
+    phoneNumberId: brand.vapiPhoneNumberId,
+    brand: brand.slug,
+  };
+}
+
 /** Resolve a brand slug → its assistant id + caller-ID number (empty if unknown). */
 async function brandRoutingBySlug(slug?: string | null): Promise<BrandRouting> {
   const s = slug?.trim();
   if (!s) return {};
-  const brand = getBrand(s);
-  if (!brand) return {};
-  return { assistantId: (await getBrandAssistantId(s)) || undefined, phoneNumberId: brand.vapiPhoneNumberId, brand: s };
+  return routingForBrand(getBrand(s));
 }
 
 /**
- * Resolve which brand assistant + caller-ID to dial with, from the lead's
- * campaign brand. Falls back to the env default assistant/number when a campaign
- * has no brand (or the brand assistant hasn't been created yet).
+ * Automatic brand routing for a lead — no manual picking required. Resolves
+ * the brand (and thus voice + caller-ID + compliance assistant) from, in order:
+ * the campaign's explicit brand override → the lead's servicing_brand → the
+ * lead's state. Falls back to the env-default assistant when nothing matches.
  */
-async function brandRoutingFor(campaignId: string | null): Promise<BrandRouting> {
-  if (!campaignId) return {};
-  const { data } = await db().from("campaign").select("brand").eq("id", campaignId).maybeSingle();
-  return brandRoutingBySlug(data?.brand as string | undefined);
+async function brandRoutingForLead(lead: LeadRow): Promise<BrandRouting> {
+  let campaignBrand: string | null = null;
+  if (lead.campaign_id) {
+    const { data } = await db().from("campaign").select("brand").eq("id", lead.campaign_id).maybeSingle();
+    campaignBrand = (data?.brand as string | null) ?? null;
+  }
+  const brand = resolveBrand({
+    campaignBrand,
+    servicingBrand: lead.servicing_brand,
+    state: lead.state,
+  });
+  return routingForBrand(brand);
+}
+
+/**
+ * Auto-assign a campaign's brand (and its calling-hours timezone) from its
+ * leads when none is set yet, so the operator never has to choose. Picks the
+ * most common brand resolved from each lead's servicing_brand/state. No-op if a
+ * brand is already set (manual override) or no confident match is found.
+ * Returns the resolved slug, or null.
+ */
+export async function autoAssignCampaignBrand(campaignId: string | null): Promise<string | null> {
+  if (!campaignId) return null;
+  const { data: camp } = await db()
+    .from("campaign")
+    .select("id, brand, region, name")
+    .eq("id", campaignId)
+    .maybeSingle();
+  if (!camp) return null;
+  if (camp.brand) return camp.brand as string; // already set — respect it
+
+  const { data: leads } = await db()
+    .from("lead")
+    .select("servicing_brand, state")
+    .eq("campaign_id", campaignId)
+    .limit(2000);
+
+  // Tally the brand each lead resolves to (servicing_brand wins, else state).
+  const tally = new Map<string, number>();
+  for (const l of leads ?? []) {
+    const b =
+      brandByName((l as { servicing_brand: string | null }).servicing_brand) ??
+      ((l as { state: string | null }).state ? brandForState((l as { state: string | null }).state as string) : undefined);
+    if (b) tally.set(b.slug, (tally.get(b.slug) ?? 0) + 1);
+  }
+
+  // Most common brand across leads, else fall back to the campaign's own
+  // region/name (e.g. "Quality — MD" → quality, "MD" → quality).
+  let slug = tally.size ? [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0] : undefined;
+  if (!slug) {
+    const region = (camp.region as string | null) ?? "";
+    const name = (camp.name as string | null) ?? "";
+    const fb =
+      brandByName(name) ??
+      brandByName(region) ??
+      (region ? brandForState(region) : undefined);
+    slug = fb?.slug;
+  }
+  if (!slug) return null;
+
+  const brand = getBrand(slug);
+  await db()
+    .from("campaign")
+    .update({ brand: slug, timezone: brand?.timezone, updated_at: new Date().toISOString() })
+    .eq("id", campaignId);
+  log.info("Auto-assigned campaign brand from leads", { campaignId, brand: slug });
+  return slug;
 }
 
 const VAPI_API = "https://api.vapi.ai";
@@ -247,8 +319,9 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     return { ok: false, reason: "outside calling window" };
   }
 
-  // Route to the campaign's brand assistant + local caller-ID (env default otherwise).
-  const routing = await brandRoutingFor(lead.campaign_id);
+  // Automatic routing: brand (→ voice + caller-ID + compliance assistant) is
+  // resolved from the lead's location/servicing_brand (env default otherwise).
+  const routing = await brandRoutingForLead(lead);
   const attemptNumber = (lead.attempts ?? 0) + 1;
 
   const result = await dispatchCall({

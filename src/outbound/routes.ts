@@ -18,7 +18,15 @@ import { cors } from "hono/cors";
 import * as XLSX from "xlsx";
 
 import { log } from "../lib/logger.ts";
-import { callNow, endCall, startCampaignWorker, stopCampaignWorker, testCall, type TestCallInput } from "./dialer.ts";
+import {
+  autoAssignCampaignBrand,
+  callNow,
+  endCall,
+  startCampaignWorker,
+  stopCampaignWorker,
+  testCall,
+  type TestCallInput,
+} from "./dialer.ts";
 import { db } from "./db.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
@@ -149,6 +157,10 @@ outbound.post("/outbound/campaign/start", async (c) => {
     }
     const { error } = await db().from("campaign").update(patch).eq("id", body.campaignId);
     if (error) return c.json({ error: error.message }, 500);
+    // Automatic brand/voice/caller-ID: if no brand was chosen, resolve it from
+    // the campaign's leads (location/servicing_brand) so the right brand agent
+    // dials — the operator doesn't have to pick.
+    await autoAssignCampaignBrand(body.campaignId);
   } else {
     // "Start all" path (no per-run budget) — unchanged legacy behavior.
     const { error } = await db()

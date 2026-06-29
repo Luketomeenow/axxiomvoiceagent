@@ -10,6 +10,7 @@
 import * as XLSX from "xlsx";
 
 import { db } from "./db.ts";
+import { autoAssignCampaignBrand } from "./dialer.ts";
 import { chooseDialNumber, toE164 } from "./phone.ts";
 
 export interface SheetInfo {
@@ -163,6 +164,11 @@ export async function importLeads(opts: {
   }
 
   const badNumbers = records.filter((r) => r.disposition === "bad_number").length;
+
+  // Automatic brand/voice/caller-ID: infer the campaign's brand from the leads
+  // we just imported (location/servicing_brand) so it's set without anyone
+  // having to choose. No-op if a brand was already assigned.
+  await autoAssignCampaignBrand(campaignId);
 
   return {
     campaignId,

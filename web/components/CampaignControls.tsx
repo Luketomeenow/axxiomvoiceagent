@@ -232,13 +232,16 @@ export function CampaignControls({
               disabled={busy}
               className="rounded-lg border border-white/10 bg-ink px-2 py-1 text-xs text-slate-200 outline-none focus:border-sky-500/60"
             >
-              <option value="">— unassigned (default) —</option>
+              <option value="">Auto — by location &amp; brand</option>
               {brands.map((b) => (
                 <option key={b.slug} value={b.slug}>
                   {b.displayName} · {b.serviceArea}
                 </option>
               ))}
             </select>
+            {!campaign.brand && (
+              <span className="text-slate-500">— picks the right brand &amp; voice per lead automatically</span>
+            )}
           </div>
         )}
       </div>

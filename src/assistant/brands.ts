@@ -226,3 +226,43 @@ export function brandForState(state: string): Brand | undefined {
   if (s === "CA") return undefined;
   return BRANDS.find((b) => b.states.includes(s));
 }
+
+/**
+ * Match a free-text servicing-brand value (from the leads workbook, e.g.
+ * "Quality Elevator", "AmeriTex", "motion") to a brand. This disambiguates the
+ * multi-brand states (CA: Liftech vs AmeriTex; FL: Motion vs Axxiom FL) that
+ * `brandForState` can't resolve on its own.
+ */
+export function brandByName(name: string | null | undefined): Brand | undefined {
+  const s = (name ?? "").trim().toLowerCase();
+  if (!s) return undefined;
+  const exact = BRANDS.find(
+    (b) => b.slug === s || b.displayName.toLowerCase() === s || b.legalName.toLowerCase() === s,
+  );
+  if (exact) return exact;
+  // Loose: the workbook value contains the brand's distinguishing first word
+  // ("quality", "motion", "liftech", "arizona", "ameritex"). "axxiom" is too
+  // generic to match on, so axxiom-fl only resolves on an exact/state match.
+  return BRANDS.find((b) => {
+    const kw = b.displayName.split(" ")[0].toLowerCase();
+    return kw.length >= 5 && kw !== "axxiom" && s.includes(kw);
+  });
+}
+
+/**
+ * Resolve the brand to dial with — fully automatic, no manual picking needed.
+ * Priority: an explicit campaign brand (manual override) → the lead's
+ * servicing_brand → the lead's US state. Returns undefined only when nothing
+ * matches, in which case the caller falls back to the env-default assistant.
+ */
+export function resolveBrand(opts: {
+  campaignBrand?: string | null;
+  servicingBrand?: string | null;
+  state?: string | null;
+}): Brand | undefined {
+  if (opts.campaignBrand) {
+    const b = getBrand(opts.campaignBrand);
+    if (b) return b;
+  }
+  return brandByName(opts.servicingBrand) ?? (opts.state ? brandForState(opts.state) : undefined);
+}

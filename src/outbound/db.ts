@@ -64,6 +64,7 @@ export interface LeadRow {
   cert_expiry_date: string | null;
   lead_score: number | null;
   lead_tier: string | null;
+  servicing_brand: string | null;
   disposition: Disposition;
   attempts: number;
   last_attempt_at: string | null;
