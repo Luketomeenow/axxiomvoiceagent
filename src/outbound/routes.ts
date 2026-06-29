@@ -180,8 +180,10 @@ outbound.post("/outbound/campaign/pause", async (c) => {
   const query = db().from("campaign").update({ status: "paused", updated_at: new Date().toISOString() });
   const { error } = body.campaignId ? await query.eq("id", body.campaignId) : await query.eq("status", "running");
   if (error) return c.json({ error: error.message }, 500);
-  stopCampaignWorker();
-  log.info("Campaign paused", { campaignId: body.campaignId ?? "all" });
+  // Only stop the worker if NO campaigns are left running (multiple can run at once).
+  const { count } = await db().from("campaign").select("id", { count: "exact", head: true }).eq("status", "running");
+  if (!count) stopCampaignWorker();
+  log.info("Campaign paused", { campaignId: body.campaignId ?? "all", stillRunning: count ?? 0 });
   return c.json({ ok: true, status: "paused" });
 });
 

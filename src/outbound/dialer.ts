@@ -42,26 +42,6 @@ async function brandRoutingBySlug(slug?: string | null): Promise<BrandRouting> {
 }
 
 /**
- * Automatic brand routing for a lead — no manual picking required. Resolves
- * the brand (and thus voice + caller-ID + compliance assistant) from, in order:
- * the campaign's explicit brand override → the lead's servicing_brand → the
- * lead's state. Falls back to the env-default assistant when nothing matches.
- */
-async function brandRoutingForLead(lead: LeadRow): Promise<BrandRouting> {
-  let campaignBrand: string | null = null;
-  if (lead.campaign_id) {
-    const { data } = await db().from("campaign").select("brand").eq("id", lead.campaign_id).maybeSingle();
-    campaignBrand = (data?.brand as string | null) ?? null;
-  }
-  const brand = resolveBrand({
-    campaignBrand,
-    servicingBrand: lead.servicing_brand,
-    state: lead.state,
-  });
-  return routingForBrand(brand);
-}
-
-/**
  * Auto-assign a campaign's brand (and its calling-hours timezone) from its
  * leads when none is set yet, so the operator never has to choose. Picks the
  * most common brand resolved from each lead's servicing_brand/state. No-op if a
@@ -315,13 +295,35 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     return { ok: false, reason: "number is suppressed (DNC)" };
   }
 
-  if (!opts.ignoreWindow && !isWithinCallingWindow(env.outboundTimezone, env.callWindowStart, env.callWindowEnd)) {
+  // Fetch the campaign once for BOTH the calling-window check and brand routing.
+  let campaignBrand: string | null = null;
+  let tz = env.outboundTimezone;
+  let winStart = env.callWindowStart;
+  let winEnd = env.callWindowEnd;
+  if (lead.campaign_id) {
+    const { data: camp } = await db()
+      .from("campaign")
+      .select("brand, timezone, call_window_start, call_window_end")
+      .eq("id", lead.campaign_id)
+      .maybeSingle();
+    if (camp) {
+      campaignBrand = (camp.brand as string | null) ?? null;
+      tz = (camp.timezone as string) ?? tz;
+      winStart = (camp.call_window_start as number) ?? winStart;
+      winEnd = (camp.call_window_end as number) ?? winEnd;
+    }
+  }
+
+  // Enforce the calling window in the CAMPAIGN's timezone (not the env default),
+  // so an ET campaign isn't gated by Pacific hours. Manual call-now bypasses it.
+  if (!opts.ignoreWindow && !isWithinCallingWindow(tz, winStart, winEnd)) {
     return { ok: false, reason: "outside calling window" };
   }
 
   // Automatic routing: brand (→ voice + caller-ID + compliance assistant) is
-  // resolved from the lead's location/servicing_brand (env default otherwise).
-  const routing = await brandRoutingForLead(lead);
+  // resolved from the campaign override → lead's servicing_brand → lead's state.
+  const brand = resolveBrand({ campaignBrand, servicingBrand: lead.servicing_brand, state: lead.state });
+  const routing = await routingForBrand(brand);
   const attemptNumber = (lead.attempts ?? 0) + 1;
 
   const result = await dispatchCall({
@@ -483,34 +485,78 @@ export async function testCall(input: TestCallInput): Promise<DialResult> {
 let timer: ReturnType<typeof setInterval> | undefined;
 const TICK_MS = 15_000;
 
-/** Count calls currently in flight (so we respect the concurrency cap). */
-async function activeCallCount(): Promise<number> {
-  const { count } = await db()
+// A call can't legitimately stay live longer than maxDurationSeconds (480s) plus
+// ring time. If an end-of-call webhook is ever missed, the call would otherwise
+// sit "ringing" forever and permanently consume a concurrency slot — so we sweep.
+const STALE_CALL_MS = 15 * 60_000;
+
+/**
+ * Close calls stuck in a live state past the max plausible duration. Without
+ * this, a single missed end-of-call webhook leaves a call "ringing" forever and
+ * blocks the concurrency slot, so the campaign silently stops dialing.
+ */
+async function sweepStaleCalls(): Promise<void> {
+  const cutoff = new Date(Date.now() - STALE_CALL_MS).toISOString();
+  const { data, error } = await db()
+    .from("call")
+    .update({ status: "ended", ended_reason: "stale-timeout", ended_at: new Date().toISOString() })
+    .in("status", ["queued", "ringing", "in-progress"])
+    .lt("created_at", cutoff)
+    .select("id");
+  if (error) {
+    log.warn("Stale-call sweep failed", { err: error.message });
+    return;
+  }
+  if (data?.length) log.info("Swept stale calls", { count: data.length });
+}
+
+/** Count calls currently in flight. Scoped to one campaign so multiple running
+ *  campaigns each get their own concurrency budget (one can't starve another). */
+async function activeCallCount(campaignId?: string): Promise<number> {
+  let q = db()
     .from("call")
     .select("id", { count: "exact", head: true })
     .in("status", ["queued", "ringing", "in-progress"]);
+  if (campaignId) q = q.eq("campaign_id", campaignId);
+  const { count } = await q;
   return count ?? 0;
 }
 
-/** One scheduling pass: dial eligible leads up to the concurrency cap. */
+/**
+ * One scheduling pass. Sweeps stale calls, then dials EVERY running campaign
+ * independently (multiple campaigns can run at the same time, each with its own
+ * window, concurrency, and per-run budget). Self-idles the worker when nothing
+ * is running.
+ */
 export async function runCampaignTick(): Promise<void> {
-  // Only run if a campaign is marked running.
-  const { data: campaign } = await db()
-    .from("campaign")
-    .select("*")
-    .eq("status", "running")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (!campaign) return;
+  await sweepStaleCalls();
 
-  const tz = campaign.timezone ?? env.outboundTimezone;
-  const start = campaign.call_window_start ?? env.callWindowStart;
-  const end = campaign.call_window_end ?? env.callWindowEnd;
+  const { data: campaigns } = await db().from("campaign").select("*").eq("status", "running");
+  if (!campaigns?.length) {
+    // Nothing to do — stop the timer; start/boot-resume re-arms it.
+    stopCampaignWorker();
+    return;
+  }
+
+  for (const campaign of campaigns) {
+    try {
+      await tickCampaign(campaign as Record<string, unknown>);
+    } catch (err) {
+      log.error("Campaign tick failed", { campaignId: (campaign as { id?: string }).id, err: String(err) });
+    }
+  }
+}
+
+/** Dial one running campaign up to its concurrency cap + remaining per-run budget. */
+async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
+  const campaignId = campaign.id as string;
+  const tz = (campaign.timezone as string) ?? env.outboundTimezone;
+  const start = (campaign.call_window_start as number) ?? env.callWindowStart;
+  const end = (campaign.call_window_end as number) ?? env.callWindowEnd;
   if (!isWithinCallingWindow(tz, start, end)) return;
 
-  const maxConcurrent = campaign.max_concurrent ?? env.maxConcurrentCalls;
-  const maxAttempts = campaign.max_attempts ?? env.maxCallAttempts;
+  const maxConcurrent = (campaign.max_concurrent as number) ?? env.maxConcurrentCalls;
+  const maxAttempts = (campaign.max_attempts as number) ?? env.maxCallAttempts;
 
   // Per-run call budget ("dial N this run, then auto-pause"). We count call rows
   // created since the run started — i.e. dial attempts, DB-derived so it's exact
@@ -522,23 +568,23 @@ export async function runCampaignTick(): Promise<void> {
     const { count } = await db()
       .from("call")
       .select("id", { count: "exact", head: true })
-      .eq("campaign_id", campaign.id)
+      .eq("campaign_id", campaignId)
       .gte("created_at", runStart);
     const placed = count ?? 0;
     if (placed >= budget) {
-      log.info("Campaign hit per-run call budget — auto-pausing", { campaignId: campaign.id, placed, budget });
+      log.info("Campaign hit per-run call budget — auto-pausing", { campaignId, placed, budget });
+      // Pause ONLY this campaign; other running campaigns keep dialing.
       await db()
         .from("campaign")
         .update({ status: "paused", updated_at: new Date().toISOString() })
-        .eq("id", campaign.id);
-      stopCampaignWorker();
+        .eq("id", campaignId);
       return;
     }
     remaining = budget - placed;
   }
 
-  const active = await activeCallCount();
-  // Never exceed the concurrency cap OR the remaining per-run budget this tick.
+  // Per-campaign concurrency so one campaign can't starve the others.
+  const active = await activeCallCount(campaignId);
   const slots = Math.min(Math.max(0, maxConcurrent - active), remaining);
   if (slots <= 0) return;
 
@@ -548,7 +594,7 @@ export async function runCampaignTick(): Promise<void> {
   const { data: leads } = await db()
     .from("lead")
     .select("*")
-    .eq("campaign_id", campaign.id)
+    .eq("campaign_id", campaignId)
     .eq("dnc", false)
     .not("dial_phone", "is", null)
     .in("disposition", RETRYABLE_DISPOSITIONS)
@@ -562,7 +608,7 @@ export async function runCampaignTick(): Promise<void> {
 
   for (const lead of leads) {
     const r = await placeCall(lead);
-    if (!r.ok) log.warn("Skipped lead", { leadId: lead.id, reason: r.reason });
+    if (!r.ok) log.warn("Skipped lead", { leadId: lead.id, campaignId, reason: r.reason });
   }
 }
 
