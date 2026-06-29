@@ -52,7 +52,8 @@ src/
 scripts/
   create-assistant.ts, create-outbound-assistant.ts, create-brand-assistants.ts, import-leads.ts, import-codes.ts
   elevenlabs/create-convai-agent.ts; seed/ (code KB); sql/ (ax_voice_call.sql, outbound_schema.sql)
-web/                  Next.js + Tailwind dashboard (region selector, monitor, leads, test-call, export)
+web/                  Next.js + Tailwind dashboard — console (page.tsx: monitor, leads, test-call, export)
+                      + /analytics (funnel, trends, call quality, compliance audit; charts in components/Charts.tsx)
 data/                 Lead workbooks + code lists (PII) — gitignored, never committed
 docs/                 Full documentation (see docs/README.md)
 ```
@@ -66,9 +67,11 @@ docs/                 Full documentation (see docs/README.md)
 
 ## Gotchas
 
-- **Per-call state is in-memory, single instance.** Scaling out requires moving it to Supabase/Redis first. Don't assume multi-instance safety.
+- **Per-call state is in-memory, single instance.** The anti-loop tool history, the disclosure-logged set (`disclosedCalls`), and the campaign worker all assume one Railway instance. Scaling out requires moving them to Supabase/Redis first.
+- **Outbound write resilience**: lead/call/event writes go through `updateLead` / `updateCall` / `recordEvent` in `src/outbound/db.ts`, which retry then dead-letter to `outbound.failed_op` instead of silently dropping. When adding new outbound writes, use these — don't call `db().from(...).update()` raw. The `/analytics` page surfaces the unresolved-failure count.
+- **Analytics**: the dashboard reads pre-aggregated SQL views (`outbound.v_*`) via `GET /outbound/analytics` + `/analytics/compliance` (in `routes.ts`). **Re-run `scripts/sql/outbound_schema.sql`** after pulling — it's additive/idempotent and creates the new columns, `failed_op`, and the views.
 - **Lead PII**: `.xlsx`/`.csv` and `data/` are gitignored and dockerignored — keep lead data there; never commit or bake it into the image.
 - **GHL response shapes** (search, free-slots, appointments) are marked `TODO` in `src/ghl/api.ts` — confirm against the live account before trusting them.
-- **Compliance** (CA AB 2905 AI disclosure, CIPA recording consent, TCPA calling hours, DNC) is implemented for outbound but has open items needing counsel — see the checklist in `README.md`. The calling-window/DNC guards live in `src/outbound/dialer.ts`.
+- **Compliance** (CA AB 2905 AI disclosure, CIPA recording consent, TCPA calling hours, DNC) is implemented for outbound but has open items needing counsel — see the checklist in `README.md`. Calling-window/DNC guards + retry backoff (`RETRY_BACKOFF_MINUTES`) + the per-lead in-flight guard live in `src/outbound/dialer.ts`. The audit trail (disclosure spoken → `disclosed_at` + `disclosure` event; consent → `consent_captured`/`consent_at` + `consent` event) is written in `src/outbound/handlers.ts` and reported on the `/analytics` compliance card.
 - **Deploy**: Railway, via `railway.json` (`bun run src/index.ts`, health `/health`). Set `SERVER_URL` to the public URL.
 ```

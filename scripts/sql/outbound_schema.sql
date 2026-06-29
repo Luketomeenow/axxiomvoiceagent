@@ -283,3 +283,150 @@ alter default privileges in schema outbound
   grant all privileges on sequences to service_role;
 alter default privileges in schema outbound
   grant select on tables to anon, authenticated;
+
+-- ===========================================================================
+-- TRACKING + COMPLIANCE MIGRATION (additive, safe to re-run)
+--
+-- Adds the columns/tables/views the analytics dashboard reads and that close
+-- the audit/resilience gaps in the agent:
+--   * per-attempt + per-brand columns on call (so quality/funnel don't need
+--     a campaign join, and we can chart attempts-to-qualify)
+--   * compliance proof on call: disclosed_at / consent_at / structured_data /
+--     success_evaluation (consent_captured + sentiment_score already existed
+--     but were never written — the handlers now populate them)
+--   * retry backoff (lead.next_attempt_after) so no-answer/voicemail leads
+--     aren't re-dialed seconds later
+--   * failed_op dead-letter table so DB writes that exhaust retries are
+--     visible + recoverable instead of silently dropped
+--   * analytics views consumed by /outbound/analytics and by Fabric/Power BI
+-- ===========================================================================
+
+-- Per-attempt + per-brand + compliance/quality columns on call.
+alter table outbound.call add column if not exists attempt_number    int;
+alter table outbound.call add column if not exists brand             text;   -- brand slug that serviced the call (denormalized for fast quality joins)
+alter table outbound.call add column if not exists disclosed_at      timestamptz;  -- when the AI/recording disclosure was actually spoken
+alter table outbound.call add column if not exists consent_at        timestamptz;  -- when recording consent was captured on this call
+alter table outbound.call add column if not exists structured_data   jsonb;  -- Vapi end-of-call structured extraction
+alter table outbound.call add column if not exists success_evaluation text;  -- Vapi PassFail success rubric result
+create index if not exists outbound_call_campaign_idx on outbound.call (campaign_id);
+create index if not exists outbound_call_brand_idx     on outbound.call (brand);
+
+-- Lead-level consent timestamp + retry backoff gate.
+alter table outbound.lead add column if not exists consent_recording_at timestamptz;
+alter table outbound.lead add column if not exists next_attempt_after    timestamptz;  -- dialer won't retry before this time
+
+-- ---------------------------------------------------------------------------
+-- failed_op — dead-letter for DB writes that exhausted in-process retries.
+-- The webhook handlers + dialer record here instead of silently dropping a
+-- lead/call/event write, so failures are queryable + replayable.
+-- ---------------------------------------------------------------------------
+create table if not exists outbound.failed_op (
+  id          bigint generated always as identity primary key,
+  kind        text not null,            -- lead.update | call.update | call_event | call.insert
+  ref_id      text,                     -- lead id / call id the op targeted
+  payload     jsonb,                    -- the patch/row we tried to write
+  error       text,                     -- last error message
+  resolved    boolean not null default false,
+  created_at  timestamptz not null default now()
+);
+create index if not exists outbound_failed_op_unresolved_idx on outbound.failed_op (resolved, created_at);
+
+alter table outbound.failed_op enable row level security;
+do $$
+begin
+  create policy "dashboard read failed_op" on outbound.failed_op for select using (true);
+exception when duplicate_object then null; end $$;
+
+-- ---------------------------------------------------------------------------
+-- Analytics views — pre-aggregated so the dashboard (and Fabric/Power BI) read
+-- small result sets instead of pulling every lead/call client-side.
+-- ---------------------------------------------------------------------------
+
+-- Per-campaign funnel: leads -> contacted -> qualified, with attempt totals.
+create or replace view outbound.v_campaign_funnel as
+select
+  c.id          as campaign_id,
+  c.name,
+  c.region,
+  c.brand,
+  c.status,
+  count(l.id)                                                                  as total_leads,
+  count(l.id) filter (where l.disposition not in ('new', 'queued'))            as contacted,
+  count(l.id) filter (where l.disposition = 'qualified')                       as qualified,
+  count(l.id) filter (where l.disposition = 'needs_followup')                  as needs_followup,
+  count(l.id) filter (where l.disposition = 'not_interested')                  as not_interested,
+  count(l.id) filter (where l.disposition in ('no_answer', 'voicemail'))       as no_contact,
+  count(l.id) filter (where l.disposition in ('dnc', 'remove'))                as removed,
+  count(l.id) filter (where l.dnc)                                             as dnc_flagged,
+  coalesce(sum(l.attempts), 0)                                                 as total_attempts
+from outbound.campaign c
+left join outbound.lead l on l.campaign_id = c.id
+group by c.id, c.name, c.region, c.brand, c.status;
+
+-- Daily call metrics (by campaign), in Pacific time for reporting.
+create or replace view outbound.v_daily_metrics as
+select
+  (started_at at time zone 'America/Los_Angeles')::date                        as day,
+  campaign_id,
+  count(*)                                                                     as calls,
+  count(*) filter (where disposition = 'qualified')                           as qualified,
+  count(*) filter (where transferred_to_human)                                as transferred,
+  count(*) filter (where outcome = 'voicemail')                               as voicemail,
+  count(*) filter (where outcome = 'no_answer')                               as no_answer,
+  count(*) filter (where outcome = 'failed')                                  as failed,
+  round(avg(duration_seconds) filter (where duration_seconds is not null), 1) as avg_duration_seconds
+from outbound.call
+where started_at is not null
+group by 1, 2;
+
+-- Call quality, by campaign + brand.
+create or replace view outbound.v_call_quality as
+select
+  campaign_id,
+  brand,
+  count(*)                                                                     as calls,
+  count(*) filter (where status = 'ended')                                    as completed,
+  round(avg(duration_seconds) filter (where duration_seconds is not null), 1) as avg_duration_seconds,
+  round(avg(sentiment_score) filter (where sentiment_score is not null), 3)   as avg_sentiment,
+  count(*) filter (where transferred_to_human)                                as transferred,
+  count(*) filter (where outcome = 'voicemail')                               as voicemail,
+  count(*) filter (where outcome = 'no_answer')                               as no_answer,
+  count(*) filter (where outcome = 'failed')                                  as failed
+from outbound.call
+group by campaign_id, brand;
+
+-- Attempts-to-outcome distribution: how many dials it takes per lead.
+create or replace view outbound.v_attempt_distribution as
+select
+  campaign_id,
+  attempts,
+  count(*)                                          as leads,
+  count(*) filter (where disposition = 'qualified') as qualified
+from outbound.lead
+group by campaign_id, attempts;
+
+-- Per-call compliance audit: was the disclosure spoken + consent captured?
+create or replace view outbound.v_compliance_audit as
+select
+  c.id            as call_id,
+  c.campaign_id,
+  c.lead_id,
+  c.phone_number,
+  c.brand,
+  c.started_at,
+  c.ended_at,
+  c.duration_seconds,
+  c.outcome,
+  c.disposition,
+  c.transferred_to_human,
+  c.disclosed_at is not null                                                   as disclosure_logged,
+  c.consent_captured,
+  c.consent_at,
+  exists (select 1 from outbound.call_event e where e.call_id = c.id and e.type = 'disclosure') as disclosure_event,
+  exists (select 1 from outbound.call_event e where e.call_id = c.id and e.type = 'consent')    as consent_event
+from outbound.call c;
+
+grant select on outbound.v_campaign_funnel, outbound.v_daily_metrics,
+               outbound.v_call_quality, outbound.v_attempt_distribution,
+               outbound.v_compliance_audit
+  to anon, authenticated, service_role;

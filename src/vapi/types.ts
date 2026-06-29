@@ -45,7 +45,11 @@ export interface VapiMessage {
   transcript?: string;
   recordingUrl?: string;
   artifact?: { transcript?: string; recordingUrl?: string; messages?: unknown[] };
-  analysis?: { summary?: string; structuredData?: Record<string, unknown> };
+  analysis?: {
+    summary?: string;
+    structuredData?: Record<string, unknown>;
+    successEvaluation?: string | boolean;
+  };
 }
 
 /** Pull per-call metadata we attach when placing outbound calls. */

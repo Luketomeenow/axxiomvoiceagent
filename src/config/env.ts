@@ -40,6 +40,9 @@ export const env = {
   callWindowEnd: num("CALL_WINDOW_END", 21),
   maxConcurrentCalls: num("MAX_CONCURRENT_CALLS", 1),
   maxCallAttempts: num("MAX_CALL_ATTEMPTS", 3),
+  // Don't re-dial a no-answer/voicemail lead before this many minutes elapse
+  // (avoids back-to-back harassment dials within the same calling window).
+  retryBackoffMinutes: num("RETRY_BACKOFF_MINUTES", 60),
   outboundLeadTable: str("OUTBOUND_LEAD_TABLE", "lead"),
   outboundCallTable: str("OUTBOUND_CALL_TABLE", "call"),
   outboundSchema: str("OUTBOUND_SCHEMA", "outbound"),

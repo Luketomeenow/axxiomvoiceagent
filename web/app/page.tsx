@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import Link from "next/link";
 import { CampaignControls } from "@/components/CampaignControls";
 import { ImportLeadsCard } from "@/components/ImportLeadsCard";
 import { StatsBar } from "@/components/StatsBar";
@@ -33,7 +34,12 @@ export default function Page() {
               </p>
             </div>
           </div>
-          <LiveStatus />
+          <div className="flex items-center gap-3">
+            <Link href="/analytics" className="btn btn-ghost btn-xs">
+              📊 Analytics
+            </Link>
+            <LiveStatus />
+          </div>
         </div>
       </header>
 

@@ -94,6 +94,12 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
             decisionMaker: { type: "boolean", description: "Were we speaking with the decision-maker?" },
             currentProvider: { type: "string", description: "Who currently services their elevator, if mentioned." },
             timeline: { type: "string", description: "Rough timeline they mentioned, if any." },
+            // Numeric caller sentiment for call-quality tracking (populates
+            // outbound.call.sentiment_score; -1 hostile … 0 neutral … 1 positive).
+            sentimentScore: {
+              type: "number",
+              description: "Overall caller sentiment from -1 (hostile/annoyed) through 0 (neutral) to 1 (warm/positive).",
+            },
             finalDisposition: {
               type: "string",
               enum: ["qualified", "needs_followup", "not_interested", "remove", "voicemail", "no_answer"],

@@ -18,13 +18,19 @@ import { toE164 } from "./phone.ts";
 import { getBrand } from "../assistant/brands.ts";
 import { getBrandAssistantId } from "./brandStore.ts";
 
+interface BrandRouting {
+  assistantId?: string;
+  phoneNumberId?: string;
+  brand?: string; // resolved brand slug (denormalized onto the call row)
+}
+
 /** Resolve a brand slug → its assistant id + caller-ID number (empty if unknown). */
-async function brandRoutingBySlug(slug?: string | null): Promise<{ assistantId?: string; phoneNumberId?: string }> {
+async function brandRoutingBySlug(slug?: string | null): Promise<BrandRouting> {
   const s = slug?.trim();
   if (!s) return {};
   const brand = getBrand(s);
   if (!brand) return {};
-  return { assistantId: (await getBrandAssistantId(s)) || undefined, phoneNumberId: brand.vapiPhoneNumberId };
+  return { assistantId: (await getBrandAssistantId(s)) || undefined, phoneNumberId: brand.vapiPhoneNumberId, brand: s };
 }
 
 /**
@@ -32,7 +38,7 @@ async function brandRoutingBySlug(slug?: string | null): Promise<{ assistantId?:
  * campaign brand. Falls back to the env default assistant/number when a campaign
  * has no brand (or the brand assistant hasn't been created yet).
  */
-async function brandRoutingFor(campaignId: string | null): Promise<{ assistantId?: string; phoneNumberId?: string }> {
+async function brandRoutingFor(campaignId: string | null): Promise<BrandRouting> {
   if (!campaignId) return {};
   const { data } = await db().from("campaign").select("brand").eq("id", campaignId).maybeSingle();
   return brandRoutingBySlug(data?.brand as string | undefined);
@@ -138,6 +144,8 @@ async function dispatchCall(opts: {
   campaignId?: string | null;
   assistantId?: string; // per-brand override (else the env default)
   phoneNumberId?: string; // per-brand caller-ID override (else the env default)
+  brand?: string | null; // resolved brand slug (denormalized for analytics)
+  attemptNumber?: number | null; // which attempt this is for the lead (1-based)
 }): Promise<DialResult> {
   assertOutbound();
 
@@ -150,6 +158,8 @@ async function dispatchCall(opts: {
       campaign_id: opts.campaignId ?? null,
       phone_number: opts.phone,
       status: "queued",
+      brand: opts.brand ?? null,
+      attempt_number: opts.attemptNumber ?? null,
     })
     .select("id")
     .single();
@@ -213,6 +223,16 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
   if (!phone) return { ok: false, reason: "no dialable phone" };
   if (lead.dnc) return { ok: false, reason: "lead is on DNC" };
 
+  // Per-lead concurrency guard: never place a second call for a lead that
+  // already has one in flight (the global concurrency cap doesn't prevent the
+  // same lead being picked twice, e.g. campaign tick + manual call-now).
+  const { count: inFlight } = await db()
+    .from("call")
+    .select("id", { count: "exact", head: true })
+    .eq("lead_id", lead.id)
+    .in("status", ["queued", "ringing", "in-progress"]);
+  if ((inFlight ?? 0) > 0) return { ok: false, reason: "lead already has a call in flight" };
+
   const sup = await checkSuppression(phone);
   if (sup.suppressed) {
     if (sup.reason === "lookup_error") {
@@ -229,6 +249,7 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
 
   // Route to the campaign's brand assistant + local caller-ID (env default otherwise).
   const routing = await brandRoutingFor(lead.campaign_id);
+  const attemptNumber = (lead.attempts ?? 0) + 1;
 
   const result = await dispatchCall({
     phone,
@@ -238,6 +259,8 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     campaignId: lead.campaign_id,
     assistantId: routing.assistantId,
     phoneNumberId: routing.phoneNumberId,
+    brand: routing.brand,
+    attemptNumber,
   });
 
   if (result.ok) {
@@ -245,7 +268,7 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
       .from("lead")
       .update({
         disposition: "calling",
-        attempts: (lead.attempts ?? 0) + 1,
+        attempts: attemptNumber,
         last_attempt_at: new Date().toISOString(),
       })
       .eq("id", lead.id);
@@ -378,6 +401,7 @@ export async function testCall(input: TestCallInput): Promise<DialResult> {
     metadata: { kind: "test", brand: input.brand ?? null },
     assistantId: routing.assistantId,
     phoneNumberId: routing.phoneNumberId,
+    brand: routing.brand ?? input.brand ?? null,
   });
 }
 
@@ -419,6 +443,9 @@ export async function runCampaignTick(): Promise<void> {
   const slots = Math.max(0, maxConcurrent - active);
   if (slots === 0) return;
 
+  // Respect the retry backoff: skip leads whose next_attempt_after is still in
+  // the future (set on no-answer/voicemail). `null` means immediately eligible.
+  const nowIso = new Date().toISOString();
   const { data: leads } = await db()
     .from("lead")
     .select("*")
@@ -427,6 +454,7 @@ export async function runCampaignTick(): Promise<void> {
     .not("dial_phone", "is", null)
     .in("disposition", RETRYABLE_DISPOSITIONS)
     .lt("attempts", maxAttempts)
+    .or(`next_attempt_after.is.null,next_attempt_after.lte.${nowIso}`)
     .order("lead_score", { ascending: false })
     .limit(slots)
     .returns<LeadRow[]>();

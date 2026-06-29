@@ -67,6 +67,65 @@ outbound.get("/outbound/stats", async (c) => {
   return c.json({ counts, total: data?.length ?? 0 });
 });
 
+// --- Analytics (tracking dashboard) ---------------------------------------
+// Reads the pre-aggregated views (outbound.v_*) so the dashboard pulls small
+// result sets instead of every lead/call. All scoped to one campaign via
+// ?campaignId; the daily series honors ?days (default 30).
+
+outbound.get("/outbound/analytics", async (c) => {
+  const campaignId = c.req.query("campaignId");
+  const days = Math.min(180, Math.max(1, Number(c.req.query("days")) || 30));
+  // Cutoff date (YYYY-MM-DD) for the daily series.
+  const cutoff = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+
+  const funnelQ = db().from("v_campaign_funnel").select("*");
+  const qualityQ = db().from("v_call_quality").select("*");
+  const dailyQ = db().from("v_daily_metrics").select("*").gte("day", cutoff).order("day", { ascending: true });
+  const attemptsQ = db().from("v_attempt_distribution").select("*").order("attempts", { ascending: true });
+
+  const [funnel, quality, daily, attempts, deadLetters] = await Promise.all([
+    campaignId ? funnelQ.eq("campaign_id", campaignId) : funnelQ,
+    campaignId ? qualityQ.eq("campaign_id", campaignId) : qualityQ,
+    campaignId ? dailyQ.eq("campaign_id", campaignId) : dailyQ,
+    campaignId ? attemptsQ.eq("campaign_id", campaignId) : attemptsQ,
+    db().from("failed_op").select("id", { count: "exact", head: true }).eq("resolved", false),
+  ]);
+
+  const firstError = funnel.error || quality.error || daily.error || attempts.error;
+  if (firstError) return c.json({ error: firstError.message }, 500);
+
+  return c.json({
+    funnel: funnel.data ?? [],
+    quality: quality.data ?? [],
+    daily: daily.data ?? [],
+    attempts: attempts.data ?? [],
+    unresolvedFailures: deadLetters.count ?? 0,
+    days,
+  });
+});
+
+// Per-call compliance audit rows (disclosure spoken? consent captured? DNC?).
+outbound.get("/outbound/analytics/compliance", async (c) => {
+  const campaignId = c.req.query("campaignId");
+  const limit = Math.min(500, Math.max(1, Number(c.req.query("limit")) || 100));
+  let q = db()
+    .from("v_compliance_audit")
+    .select("*")
+    .not("started_at", "is", null)
+    .order("started_at", { ascending: false })
+    .limit(limit);
+  if (campaignId) q = q.eq("campaign_id", campaignId);
+  const { data, error } = await q;
+  if (error) return c.json({ error: error.message }, 500);
+
+  const rows = (data ?? []) as Array<Record<string, unknown>>;
+  // Headline compliance summary across the returned window.
+  const total = rows.length;
+  const disclosed = rows.filter((r) => r.disclosure_logged || r.disclosure_event).length;
+  const consented = rows.filter((r) => r.consent_captured || r.consent_event).length;
+  return c.json({ rows, summary: { total, disclosed, consented } });
+});
+
 outbound.post("/outbound/campaign/start", async (c) => {
   const body = await c.req.json<{ campaignId?: string }>().catch(() => ({}) as { campaignId?: string });
   const query = db().from("campaign").update({ status: "running", updated_at: new Date().toISOString() });

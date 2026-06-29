@@ -7,7 +7,7 @@
 
 import { env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
-import { db, recordEvent, suppressNumber, type Disposition } from "./db.ts";
+import { db, recordEvent, suppressNumber, updateCall, updateLead, type Disposition } from "./db.ts";
 import { OUTBOUND_TOOL_NAMES } from "../assistant/outbound/tools.ts";
 import {
   callMetadata,
@@ -89,9 +89,21 @@ function repeatRedirect(tool: string): string {
   }
 }
 
-/** Drop a call's tool history once it ends (keeps the in-memory map small). */
+// --- Disclosure audit ------------------------------------------------------
+// AB 2905 (AI disclosure) + CIPA (recorded-line) require the disclosure to be
+// SPOKEN. The opener is delivered assistant-speaks-first, so the first finalized
+// assistant transcript line IS the disclosure being heard. We log a one-time
+// `disclosure` audit event (and stamp call.disclosed_at) the first time we see
+// it, giving an auditable record that the disclosure actually played before any
+// substantive conversation. In-memory set is fine on a single instance (same
+// assumption as the anti-loop history above).
+const disclosedCalls = new Set<string>();
+
+/** Drop a call's in-memory state once it ends (keeps the maps small). */
 export function clearToolHistory(message: VapiMessage): void {
-  toolHistoryByCall.delete(callKeyOf(message));
+  const key = callKeyOf(message);
+  toolHistoryByCall.delete(key);
+  disclosedCalls.delete(key);
 }
 
 // --- Tool implementations --------------------------------------------------
@@ -116,25 +128,37 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
   ].filter(Boolean);
   const notes = noteParts.join(" | ");
 
+  const nowIso = new Date().toISOString();
   if (leadId) {
     // Write the structured, sales-ready fields (not just the free-text note),
-    // so the sales team gets clean columns to act on.
-    await db()
-      .from("lead")
-      .update({
-        consent_recording: true,
-        notes: notes || null,
-        decision_maker: typeof args.decisionMaker === "boolean" ? args.decisionMaker : null,
-        current_provider: str(args.currentProvider) ?? null,
-        timeline: str(args.timeline) ?? null,
-        callback_name: str(args.bestCallbackName) ?? null,
-        callback_phone: str(args.bestCallbackPhone) ?? null,
-        callback_email: str(args.bestCallbackEmail) ?? null,
-        contact_phone: str(args.bestCallbackPhone),
-        contact_email: str(args.bestCallbackEmail),
-      })
-      .eq("id", leadId);
+    // so the sales team gets clean columns to act on. Retries + dead-letters on
+    // failure so a captured qualification is never silently lost.
+    await updateLead(leadId, {
+      consent_recording: true,
+      consent_recording_at: nowIso,
+      notes: notes || null,
+      decision_maker: typeof args.decisionMaker === "boolean" ? args.decisionMaker : null,
+      current_provider: str(args.currentProvider) ?? null,
+      timeline: str(args.timeline) ?? null,
+      callback_name: str(args.bestCallbackName) ?? null,
+      callback_phone: str(args.bestCallbackPhone) ?? null,
+      callback_email: str(args.bestCallbackEmail) ?? null,
+      contact_phone: str(args.bestCallbackPhone),
+      contact_email: str(args.bestCallbackEmail),
+    });
   }
+  // Stamp recording consent on the call row itself (previously `consent_captured`
+  // was defined in the schema but never written) so each call carries its own
+  // CIPA audit flag, not just the lead.
+  if (callRowId) await updateCall(callRowId, { consent_captured: true, consent_at: nowIso });
+  // Explicit consent moment in the audit trail (distinct from the tool-call log).
+  await recordEvent({
+    call_id: callRowId,
+    vapi_call_id: message.call?.id,
+    type: "consent",
+    text: "recording consent captured (qualifyLead)",
+    payload: { consent: true, at: nowIso },
+  });
   await recordEvent({
     call_id: callRowId,
     vapi_call_id: message.call?.id,
@@ -158,10 +182,10 @@ async function runRecordDisposition(args: Record<string, unknown>, message: Vapi
     const update: Record<string, unknown> = { disposition, notes };
     // Stamp the moment a lead became sales-ready.
     if (disposition === "qualified") update.qualified_at = new Date().toISOString();
-    await db().from("lead").update(update).eq("id", leadId);
+    await updateLead(leadId, update);
   }
   if (callRowId) {
-    await db().from("call").update({ disposition, outcome: disposition }).eq("id", callRowId);
+    await updateCall(callRowId, { disposition, outcome: disposition });
   }
   await recordEvent({
     call_id: callRowId,
@@ -187,8 +211,8 @@ async function runOptOut(args: Record<string, unknown>, message: VapiMessage): P
     dialPhone = (data?.dial_phone as string) || "";
   }
   if (dialPhone) await suppressNumber(dialPhone, reason, "caller_request");
-  if (leadId) await db().from("lead").update({ dnc: true, disposition: "dnc", notes: reason }).eq("id", leadId);
-  if (callRowId) await db().from("call").update({ disposition: "dnc", outcome: "do_not_call" }).eq("id", callRowId);
+  if (leadId) await updateLead(leadId, { dnc: true, disposition: "dnc", notes: reason });
+  if (callRowId) await updateCall(callRowId, { disposition: "dnc", outcome: "do_not_call" });
 
   await recordEvent({
     call_id: callRowId,
@@ -341,6 +365,23 @@ export async function handleOutboundTranscript(message: VapiMessage): Promise<vo
   const text = message.transcript;
   if (!text) return;
   const callRowId = await resolveCallRowId(message);
+
+  // The first finalized assistant line is the spoken AB 2905 / recording
+  // disclosure (assistant-speaks-first). Log it once as a `disclosure` audit
+  // event + stamp the call so compliance can prove the disclosure played.
+  const key = callKeyOf(message);
+  if (message.role === "assistant" && !disclosedCalls.has(key)) {
+    disclosedCalls.add(key);
+    if (callRowId) await updateCall(callRowId, { disclosed_at: new Date().toISOString() });
+    await recordEvent({
+      call_id: callRowId,
+      vapi_call_id: message.call?.id,
+      type: "disclosure",
+      role: "assistant",
+      text,
+    });
+  }
+
   await recordEvent({
     call_id: callRowId,
     vapi_call_id: message.call?.id,
@@ -358,6 +399,9 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
   const transferred = (message.endedReason ?? "").toLowerCase().includes("transfer");
   const summary = message.analysis?.summary ?? message.summary ?? null;
   const recordingUrl = message.recordingUrl ?? message.artifact?.recordingUrl ?? null;
+  const structured = message.analysis?.structuredData ?? null;
+  const successEval =
+    message.analysis?.successEvaluation == null ? null : String(message.analysis.successEvaluation);
 
   if (callRowId) {
     const { data: existing } = await db().from("call").select("disposition").eq("id", callRowId).maybeSingle();
@@ -369,6 +413,12 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
       summary,
       recording_url: recordingUrl,
       transferred_to_human: transferred,
+      // Previously-unwritten analytics columns: the Vapi end-of-call analysis.
+      structured_data: structured,
+      success_evaluation: successEval,
+      sentiment_score: typeof (structured as Record<string, unknown>)?.sentimentScore === "number"
+        ? (structured as Record<string, number>).sentimentScore
+        : null,
       ended_at: new Date().toISOString(),
       raw: message,
     };
@@ -388,11 +438,17 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
         // Don't overwrite a disposition a tool already set on the lead.
         const { data: lead } = await db().from("lead").select("disposition").eq("id", leadId).maybeSingle();
         if (lead && (lead.disposition === "calling" || lead.disposition === "queued" || lead.disposition === "new")) {
-          await db().from("lead").update({ disposition: fallback }).eq("id", leadId);
+          const leadUpdate: Record<string, unknown> = { disposition: fallback };
+          // Retry backoff: a no-answer/voicemail lead stays retryable but isn't
+          // re-dialed until the backoff window elapses (no back-to-back dials).
+          if (fallback === "no_answer" || fallback === "voicemail") {
+            leadUpdate.next_attempt_after = new Date(Date.now() + env.retryBackoffMinutes * 60_000).toISOString();
+          }
+          await updateLead(leadId, leadUpdate);
         }
       }
     }
-    await db().from("call").update(update).eq("id", callRowId);
+    await updateCall(callRowId, update);
   }
 
   await recordEvent({

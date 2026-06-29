@@ -69,7 +69,103 @@ export interface TestCallBody {
   brand?: string; // optional brand slug → test that brand's agent (voice + caller ID)
 }
 
+// --- Analytics (tracking dashboard) ---------------------------------------
+
+export interface FunnelRow {
+  campaign_id: string;
+  name: string;
+  region: string | null;
+  brand: string | null;
+  status: string;
+  total_leads: number;
+  contacted: number;
+  qualified: number;
+  needs_followup: number;
+  not_interested: number;
+  no_contact: number;
+  removed: number;
+  dnc_flagged: number;
+  total_attempts: number;
+}
+
+export interface QualityRow {
+  campaign_id: string | null;
+  brand: string | null;
+  calls: number;
+  completed: number;
+  avg_duration_seconds: number | null;
+  avg_sentiment: number | null;
+  transferred: number;
+  voicemail: number;
+  no_answer: number;
+  failed: number;
+}
+
+export interface DailyRow {
+  day: string;
+  campaign_id: string | null;
+  calls: number;
+  qualified: number;
+  transferred: number;
+  voicemail: number;
+  no_answer: number;
+  failed: number;
+  avg_duration_seconds: number | null;
+}
+
+export interface AttemptRow {
+  campaign_id: string | null;
+  attempts: number;
+  leads: number;
+  qualified: number;
+}
+
+export interface AnalyticsResponse {
+  funnel: FunnelRow[];
+  quality: QualityRow[];
+  daily: DailyRow[];
+  attempts: AttemptRow[];
+  unresolvedFailures: number;
+  days: number;
+  error?: string;
+}
+
+export interface ComplianceRow {
+  call_id: string;
+  campaign_id: string | null;
+  phone_number: string | null;
+  brand: string | null;
+  started_at: string | null;
+  duration_seconds: number | null;
+  outcome: string | null;
+  disposition: string | null;
+  transferred_to_human: boolean | null;
+  disclosure_logged: boolean;
+  disclosure_event: boolean;
+  consent_captured: boolean | null;
+  consent_event: boolean;
+  consent_at: string | null;
+}
+
+export interface ComplianceResponse {
+  rows: ComplianceRow[];
+  summary: { total: number; disclosed: number; consented: number };
+  error?: string;
+}
+
 export const api = {
+  analytics: async (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
+    const q = new URLSearchParams({ days: String(days) });
+    if (campaignId) q.set("campaignId", campaignId);
+    const res = await fetch(`${API_BASE}/outbound/analytics?${q.toString()}`);
+    return res.json();
+  },
+  compliance: async (campaignId?: string | null, limit = 100): Promise<ComplianceResponse> => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (campaignId) q.set("campaignId", campaignId);
+    const res = await fetch(`${API_BASE}/outbound/analytics/compliance?${q.toString()}`);
+    return res.json();
+  },
   startCampaign: (campaignId?: string) => post("/outbound/campaign/start", { campaignId }),
   pauseCampaign: (campaignId?: string) => post("/outbound/campaign/pause", { campaignId }),
   updateCampaign: (id: string, patch: { name?: string; region?: string; brand?: string }) =>
