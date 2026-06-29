@@ -83,4 +83,6 @@ export interface Campaign {
   call_window_end: number;
   max_concurrent: number;
   max_attempts: number;
+  max_calls_per_run: number | null;
+  run_started_at: string | null;
 }

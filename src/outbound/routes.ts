@@ -126,13 +126,40 @@ outbound.get("/outbound/analytics/compliance", async (c) => {
   return c.json({ rows, summary: { total, disclosed, consented } });
 });
 
+// Start a campaign. For a specific campaign you can pass:
+//   maxCalls       — dial up to N calls this run, then auto-pause (null = unlimited)
+//   maxConcurrent  — how many calls may be in flight at once
+// Every start stamps run_started_at = now() so the per-run budget is measured
+// from this moment (each Start = a fresh batch).
 outbound.post("/outbound/campaign/start", async (c) => {
-  const body = await c.req.json<{ campaignId?: string }>().catch(() => ({}) as { campaignId?: string });
-  const query = db().from("campaign").update({ status: "running", updated_at: new Date().toISOString() });
-  const { error } = body.campaignId ? await query.eq("id", body.campaignId) : await query.neq("status", "done");
-  if (error) return c.json({ error: error.message }, 500);
+  const body = await c.req
+    .json<{ campaignId?: string; maxCalls?: number | null; maxConcurrent?: number }>()
+    .catch(() => ({}) as { campaignId?: string; maxCalls?: number | null; maxConcurrent?: number });
+
+  if (body.campaignId) {
+    const patch: Record<string, unknown> = {
+      status: "running",
+      updated_at: new Date().toISOString(),
+      run_started_at: new Date().toISOString(),
+    };
+    if (body.maxCalls === null) patch.max_calls_per_run = null;
+    else if (typeof body.maxCalls === "number" && body.maxCalls > 0) patch.max_calls_per_run = Math.floor(body.maxCalls);
+    if (typeof body.maxConcurrent === "number" && body.maxConcurrent >= 1) {
+      patch.max_concurrent = Math.floor(body.maxConcurrent);
+    }
+    const { error } = await db().from("campaign").update(patch).eq("id", body.campaignId);
+    if (error) return c.json({ error: error.message }, 500);
+  } else {
+    // "Start all" path (no per-run budget) — unchanged legacy behavior.
+    const { error } = await db()
+      .from("campaign")
+      .update({ status: "running", updated_at: new Date().toISOString() })
+      .neq("status", "done");
+    if (error) return c.json({ error: error.message }, 500);
+  }
+
   startCampaignWorker();
-  log.info("Campaign started", { campaignId: body.campaignId ?? "all" });
+  log.info("Campaign started", { campaignId: body.campaignId ?? "all", maxCalls: body.maxCalls });
   return c.json({ ok: true, status: "running" });
 });
 
@@ -150,8 +177,14 @@ outbound.post("/outbound/campaign/pause", async (c) => {
 outbound.post("/outbound/campaign/:id/update", async (c) => {
   const id = c.req.param("id");
   const body = await c.req
-    .json<{ name?: string; region?: string; brand?: string }>()
-    .catch(() => ({}) as { name?: string; region?: string; brand?: string });
+    .json<{
+      name?: string;
+      region?: string;
+      brand?: string;
+      maxConcurrent?: number;
+      maxCalls?: number | null;
+    }>()
+    .catch(() => ({}) as { name?: string; region?: string; brand?: string; maxConcurrent?: number; maxCalls?: number | null });
   const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
   if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
   if (typeof body.region === "string") patch.region = body.region.trim() || null;
@@ -163,7 +196,14 @@ outbound.post("/outbound/campaign/:id/update", async (c) => {
     const brand = slug ? getBrand(slug) : undefined;
     if (brand) patch.timezone = brand.timezone;
   }
-  if (!("name" in patch) && !("region" in patch) && !("brand" in patch)) {
+  if (typeof body.maxConcurrent === "number" && body.maxConcurrent >= 1) {
+    patch.max_concurrent = Math.floor(body.maxConcurrent);
+  }
+  if (body.maxCalls === null) patch.max_calls_per_run = null;
+  else if (typeof body.maxCalls === "number" && body.maxCalls > 0) patch.max_calls_per_run = Math.floor(body.maxCalls);
+
+  if (Object.keys(patch).length === 1) {
+    // Only updated_at — nothing meaningful was provided.
     return c.json({ ok: false, error: "nothing to update" }, 400);
   }
   const { data, error } = await db().from("campaign").update(patch).eq("id", id).select("*").maybeSingle();

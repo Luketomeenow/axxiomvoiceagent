@@ -439,9 +439,35 @@ export async function runCampaignTick(): Promise<void> {
   const maxConcurrent = campaign.max_concurrent ?? env.maxConcurrentCalls;
   const maxAttempts = campaign.max_attempts ?? env.maxCallAttempts;
 
+  // Per-run call budget ("dial N this run, then auto-pause"). We count call rows
+  // created since the run started — i.e. dial attempts, DB-derived so it's exact
+  // across restarts/boot-resume. `null` budget = unlimited (legacy behavior).
+  const budget = campaign.max_calls_per_run as number | null;
+  const runStart = campaign.run_started_at as string | null;
+  let remaining = Infinity;
+  if (budget != null && runStart) {
+    const { count } = await db()
+      .from("call")
+      .select("id", { count: "exact", head: true })
+      .eq("campaign_id", campaign.id)
+      .gte("created_at", runStart);
+    const placed = count ?? 0;
+    if (placed >= budget) {
+      log.info("Campaign hit per-run call budget — auto-pausing", { campaignId: campaign.id, placed, budget });
+      await db()
+        .from("campaign")
+        .update({ status: "paused", updated_at: new Date().toISOString() })
+        .eq("id", campaign.id);
+      stopCampaignWorker();
+      return;
+    }
+    remaining = budget - placed;
+  }
+
   const active = await activeCallCount();
-  const slots = Math.max(0, maxConcurrent - active);
-  if (slots === 0) return;
+  // Never exceed the concurrency cap OR the remaining per-run budget this tick.
+  const slots = Math.min(Math.max(0, maxConcurrent - active), remaining);
+  if (slots <= 0) return;
 
   // Respect the retry backoff: skip leads whose next_attempt_after is still in
   // the future (set on no-answer/voicemail). `null` means immediately eligible.

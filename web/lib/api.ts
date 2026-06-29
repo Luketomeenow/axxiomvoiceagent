@@ -166,10 +166,13 @@ export const api = {
     const res = await fetch(`${API_BASE}/outbound/analytics/compliance?${q.toString()}`);
     return res.json();
   },
-  startCampaign: (campaignId?: string) => post("/outbound/campaign/start", { campaignId }),
+  startCampaign: (campaignId?: string, opts?: { maxCalls?: number | null; maxConcurrent?: number }) =>
+    post("/outbound/campaign/start", { campaignId, ...opts }),
   pauseCampaign: (campaignId?: string) => post("/outbound/campaign/pause", { campaignId }),
-  updateCampaign: (id: string, patch: { name?: string; region?: string; brand?: string }) =>
-    post(`/outbound/campaign/${id}/update`, patch),
+  updateCampaign: (
+    id: string,
+    patch: { name?: string; region?: string; brand?: string; maxConcurrent?: number; maxCalls?: number | null },
+  ) => post(`/outbound/campaign/${id}/update`, patch),
   deleteCampaign: (id: string) => post(`/outbound/campaign/${id}/delete`),
   brandList: async (): Promise<BrandInfoOption[]> => {
     const res = await fetch(`${API_BASE}/outbound/brand-list`);

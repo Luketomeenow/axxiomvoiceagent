@@ -315,6 +315,13 @@ create index if not exists outbound_call_brand_idx     on outbound.call (brand);
 alter table outbound.lead add column if not exists consent_recording_at timestamptz;
 alter table outbound.lead add column if not exists next_attempt_after    timestamptz;  -- dialer won't retry before this time
 
+-- Per-run call budget: the operator chooses how many calls to place in a run.
+-- The worker counts call rows created since run_started_at and auto-pauses the
+-- campaign once max_calls_per_run is reached. `null` budget = unlimited (legacy
+-- behavior). Every Start resets run_started_at, so each Start is a fresh batch.
+alter table outbound.campaign add column if not exists max_calls_per_run int;
+alter table outbound.campaign add column if not exists run_started_at    timestamptz;
+
 -- ---------------------------------------------------------------------------
 -- failed_op — dead-letter for DB writes that exhausted in-process retries.
 -- The webhook handlers + dialer record here instead of silently dropping a

@@ -201,6 +201,32 @@ npm run create-assistant:node    # inbound assistant
 | Dashboard → Supabase | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (in `web/.env.local`) |
 | Dashboard → backend | `NEXT_PUBLIC_API_BASE` |
 
+## Go-live pre-flight (operational)
+
+The code guardrails are enforced, but the campaign **will misbehave** without these
+environment/config steps. Run through this before pressing **Start** on a real campaign:
+
+- [ ] **Expose the `outbound` schema** — Supabase → Settings → API → Exposed schemas →
+      add `outbound`. *If missed, every DNC lookup errors → fail-closed → **every number
+      is blocked** and the campaign dials nothing.*
+- [ ] **Enable Realtime** on `outbound` — Database → Replication. *(Live monitor /
+      dashboard won't stream otherwise.)*
+- [ ] **Re-run `scripts/sql/outbound_schema.sql`** (idempotent) so the latest columns,
+      `failed_op` dead-letter, analytics `v_*` views, and the per-run budget columns exist.
+- [ ] **`ENABLE_VOICEMAIL_DETECTION=true`** for the live run *(off by default, or the
+      agent pitches answering machines)*.
+- [ ] **`VAPI_SERVER_SECRET`** set and matched in the assistant *(webhook auth is optional
+      today and only warns if missing — turn it on)*.
+- [ ] **Required env vars** present: `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`,
+      `OUTBOUND_ASSISTANT_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Create assistants
+      (`create-outbound-assistant`, `create-brand-assistants`); seed any known DNC numbers
+      into `outbound.dnc_suppression`.
+- [ ] **Start small**: `MAX_CONCURRENT_CALLS=1` and use **Calls this run** on the dashboard
+      to dial a small first batch. Do one **test call**, confirm the disclosure plays, then
+      check `outbound.v_compliance_audit` shows `disclosure_logged` + `consent_event` for it.
+- [ ] **Watch the dead-letter count** — the `/analytics` page surfaces unresolved write
+      failures (`outbound.failed_op`); it should stay at 0.
+
 ## Compliance checklist (CA outbound)
 
 Built in, but **review with counsel before going live**:
