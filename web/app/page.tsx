@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import Link from "next/link";
 import { CampaignControls } from "@/components/CampaignControls";
+import { LiveCampaigns } from "@/components/LiveCampaigns";
 import { ImportLeadsCard } from "@/components/ImportLeadsCard";
 import { StatsBar } from "@/components/StatsBar";
 import { LiveMonitor } from "@/components/LiveMonitor";
@@ -44,6 +45,7 @@ export default function Page() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-5 p-5">
+        <LiveCampaigns onSelect={setCampaignId} />
         <StatsBar refreshKey={refreshKey} campaignId={campaignId} />
         <CampaignControls campaignId={campaignId} onSelect={setCampaignId} onChange={refresh} />
 
