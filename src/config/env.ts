@@ -32,6 +32,15 @@ export const env = {
   vapiAssistantId: str("VAPI_ASSISTANT_ID"),
   vapiPhoneNumberId: str("VAPI_PHONE_NUMBER_ID"),
   vapiServerSecret: str("VAPI_SERVER_SECRET"),
+  // Fail-closed by default: if VAPI_SERVER_SECRET is unset, /vapi/webhook is
+  // refused (503) rather than served open. Set this true ONLY for local dev.
+  allowInsecureWebhook: bool("ALLOW_INSECURE_WEBHOOK", false),
+
+  // Twilio — used ONLY by the `import-twilio-numbers` CLI to register your
+  // Twilio DIDs in Vapi as caller-ID numbers. The server never dials Twilio
+  // itself; Vapi places the calls using the credentials stored at import time.
+  twilioAccountSid: str("TWILIO_ACCOUNT_SID"),
+  twilioAuthToken: str("TWILIO_AUTH_TOKEN"),
 
   // Outbound campaign (separate assistant + dialer)
   outboundAssistantId: str("OUTBOUND_ASSISTANT_ID"),
@@ -43,6 +52,13 @@ export const env = {
   // Don't re-dial a no-answer/voicemail lead before this many minutes elapse
   // (avoids back-to-back harassment dials within the same calling window).
   retryBackoffMinutes: num("RETRY_BACKOFF_MINUTES", 60),
+  // Per-number frequency cap: max dials to one phone number in a rolling 24h
+  // window, across ALL leads that share it (one phone can map to several
+  // buildings/leads). Guards against over-calling one person. TCPA-adjacent.
+  maxCallsPerNumberPerDay: num("MAX_CALLS_PER_NUMBER_PER_DAY", 3),
+  // Data retention: after this many days, call transcripts/recordings/raw
+  // payloads are purged by the retention job (structural rows + metrics stay).
+  piiRetainDays: num("PII_RETAIN_DAYS", 90),
   outboundLeadTable: str("OUTBOUND_LEAD_TABLE", "lead"),
   outboundCallTable: str("OUTBOUND_CALL_TABLE", "call"),
   outboundSchema: str("OUTBOUND_SCHEMA", "outbound"),
@@ -77,7 +93,15 @@ export const env = {
   // Supabase
   supabaseUrl: str("SUPABASE_URL"),
   supabaseServiceRoleKey: str("SUPABASE_SERVICE_ROLE_KEY"),
+  // Anon (public) key — used ONLY by the backend to validate a dashboard user's
+  // JWT on /outbound/* requests (auth.getUser). Never used for data access.
+  supabaseAnonKey: str("SUPABASE_ANON_KEY"),
   voiceCallTable: str("VOICE_CALL_TABLE", "ax_voice_call"),
+
+  // Dashboard API auth (outbound routes). Comma-separated allowed CORS origins
+  // (the Netlify dashboard URL[s]); empty = same-origin only. The dashboard
+  // authenticates by forwarding its Supabase JWT as `Authorization: Bearer`.
+  dashboardOrigin: str("DASHBOARD_ORIGIN"),
 
   // Business config (prompt)
   companyName: str("COMPANY_NAME", "Axxiom Elevator"),
@@ -115,6 +139,14 @@ export function assertSupabase(): void {
 
 export function assertVapi(): void {
   require({ VAPI_API_KEY: env.vapiApiKey });
+}
+
+export function assertTwilio(): void {
+  require({
+    VAPI_API_KEY: env.vapiApiKey,
+    TWILIO_ACCOUNT_SID: env.twilioAccountSid,
+    TWILIO_AUTH_TOKEN: env.twilioAuthToken,
+  });
 }
 
 export function assertOutbound(): void {

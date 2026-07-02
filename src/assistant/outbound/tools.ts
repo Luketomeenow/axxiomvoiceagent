@@ -7,11 +7,31 @@
 import { env } from "../../config/env.ts";
 
 export const OUTBOUND_TOOL_NAMES = {
+  confirmConsent: "confirmConsent",
   qualifyLead: "qualifyLead",
   recordDisposition: "recordDisposition",
   optOut: "optOut",
   lookupViolationCode: "lookupViolationCode",
 } as const;
+
+export const confirmConsentTool = {
+  type: "function" as const,
+  function: {
+    name: OUTBOUND_TOOL_NAMES.confirmConsent,
+    description:
+      "Call this the MOMENT the person clearly agrees (or declines) to continue on a recorded line — before any qualifying. Pass granted=true ONLY on an explicit yes; pass granted=false if they decline or object. This writes the CIPA recording-consent audit record. Do not assume consent — only record what they actually said.",
+    parameters: {
+      type: "object",
+      properties: {
+        granted: {
+          type: "boolean",
+          description: "true only if they explicitly agreed to continue on a recorded line; false if they declined.",
+        },
+      },
+      required: ["granted"],
+    },
+  },
+};
 
 export const lookupViolationCodeTool = {
   type: "function" as const,
@@ -122,6 +142,7 @@ export function endCallTool() {
 /** All outbound tools. transferCall is only added when a transfer number is available. */
 export function buildOutboundTools(transferNumber: string = env.transferPhoneNumber): unknown[] {
   const tools: unknown[] = [
+    confirmConsentTool,
     qualifyLeadTool,
     recordDispositionTool,
     optOutTool,

@@ -56,6 +56,13 @@ export function buildAssistantConfig() {
     backgroundSound: "office",
     backgroundDenoisingEnabled: true,
 
+    // Record every call — made explicit (not left to the Vapi account default) so
+    // it stays in sync with the recorded-line disclosure in the opener
+    // (buildFirstMessage). If you turn this off, also drop that clause.
+    artifactPlan: {
+      recordingEnabled: true,
+    },
+
     // Built-in post-call analysis (summary + structured data) from Vapi itself;
     // our optional Claude pass in src/ai/analyzeTranscript.ts adds to this.
     analysisPlan: {

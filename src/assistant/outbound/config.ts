@@ -73,7 +73,9 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
     // machine — but it false-positives on live humans, so it's off for testing
     // (ENABLE_VOICEMAIL_DETECTION). `null` clears any existing setting on PATCH.
     voicemailDetection: env.enableVoicemailDetection ? { provider: "vapi" } : null,
-    voicemailMessage: `Hi, this is a call from ${brand.displayName} about the elevator inspection at your building. We'll try you again, or you can reach our team during business hours. Thank you.`,
+    // Discloses the AI (AB 2905) — the live opener isn't heard by a machine, so
+    // the voicemail carries its own disclosure.
+    voicemailMessage: `Hi, this is an automated AI assistant calling on behalf of ${brand.displayName} about the elevator inspection at your building. We'll try you again, or you can reach our team during business hours. Thank you.`,
     endCallMessage: "Thanks so much for your time — take care.",
 
     // Record + transcribe every call (needed for the live dashboard + CIPA audit trail).

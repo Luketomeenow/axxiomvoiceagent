@@ -13,8 +13,10 @@
 
 import { assertOutbound, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
-import { checkSuppression, db, recordEvent, type LeadRow } from "./db.ts";
+import { checkSuppression, db, recordEvent, updateCall, updateLead, type LeadRow } from "./db.ts";
 import { toE164 } from "./phone.ts";
+import { timezoneForState } from "./timezone.ts";
+import { maskPhone } from "../lib/redact.ts";
 import { type Brand, brandForState, brandByName, getBrand, resolveBrand } from "../assistant/brands.ts";
 import { getBrandAssistantId } from "./brandStore.ts";
 
@@ -234,15 +236,15 @@ async function dispatchCall(opts: {
     // end (or otherwise control) the live call from the dashboard.
     const controlUrl =
       (result.monitor as { controlUrl?: string } | undefined)?.controlUrl ?? null;
-    await db()
-      .from("call")
-      .update({
-        vapi_call_id: vapiCallId,
-        control_url: controlUrl,
-        status: "ringing",
-        started_at: new Date().toISOString(),
-      })
-      .eq("id", callRowId);
+    // Resilient write (retry + dead-letter): losing this silently would strand the
+    // call row without its vapi_call_id/control_url (no "End call", webhook linkage
+    // falls back to metadata.callRowId only).
+    await updateCall(callRowId, {
+      vapi_call_id: vapiCallId,
+      control_url: controlUrl,
+      status: "ringing",
+      started_at: new Date().toISOString(),
+    });
 
     await recordEvent({
       call_id: callRowId,
@@ -252,13 +254,15 @@ async function dispatchCall(opts: {
       payload: { phone: opts.phone, kind: opts.metadata.kind ?? "outbound" },
     });
 
-    log.info("Outbound call placed", { leadId: opts.leadId ?? null, vapiCallId, phone: opts.phone });
+    log.info("Outbound call placed", { leadId: opts.leadId ?? null, vapiCallId, phone: maskPhone(opts.phone) });
     return { ok: true, vapiCallId, callRowId };
   } catch (err) {
-    await db()
-      .from("call")
-      .update({ status: "ended", outcome: "failed", ended_reason: String(err), ended_at: new Date().toISOString() })
-      .eq("id", callRowId);
+    await updateCall(callRowId, {
+      status: "ended",
+      outcome: "failed",
+      ended_reason: String(err),
+      ended_at: new Date().toISOString(),
+    });
     log.error("Outbound call failed to place", { leadId: opts.leadId ?? null, err: String(err) });
     return { ok: false, reason: String(err), callRowId };
   }
@@ -291,7 +295,7 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
       // Don't poison the lead as DNC for a connectivity/config problem.
       return { ok: false, reason: `DNC check failed (Supabase error): ${sup.error}` };
     }
-    await db().from("lead").update({ dnc: true, disposition: "dnc" }).eq("id", lead.id);
+    await updateLead(lead.id, { dnc: true, disposition: "dnc" });
     return { ok: false, reason: "number is suppressed (DNC)" };
   }
 
@@ -314,10 +318,30 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     }
   }
 
-  // Enforce the calling window in the CAMPAIGN's timezone (not the env default),
-  // so an ET campaign isn't gated by Pacific hours. Manual call-now bypasses it.
-  if (!opts.ignoreWindow && !isWithinCallingWindow(tz, winStart, winEnd)) {
+  // Enforce the calling window in the LEAD's own timezone (from its state) when
+  // known, falling back to the campaign tz. TCPA is about the called party's
+  // local time — a multi-tz brand (e.g. AmeriTex spanning TX+CA on Central) must
+  // not dial a CA lead on Central hours. Manual call-now bypasses the window.
+  const windowTz = timezoneForState(lead.state) ?? tz;
+  if (!opts.ignoreWindow && !isWithinCallingWindow(windowTz, winStart, winEnd)) {
     return { ok: false, reason: "outside calling window" };
+  }
+
+  // Per-number frequency cap across ALL leads sharing this phone (one number can
+  // map to several buildings). Prevents over-calling one person. Manual call-now
+  // bypasses it (operator's discretion). Back the lead off so we don't re-check
+  // it every tick once capped.
+  if (!opts.ignoreWindow) {
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    const { count: recentToNumber } = await db()
+      .from("call")
+      .select("id", { count: "exact", head: true })
+      .eq("phone_number", phone)
+      .gte("created_at", dayAgo);
+    if ((recentToNumber ?? 0) >= env.maxCallsPerNumberPerDay) {
+      await updateLead(lead.id, { next_attempt_after: new Date(Date.now() + 6 * 60 * 60_000).toISOString() });
+      return { ok: false, reason: "per-number daily frequency cap reached" };
+    }
   }
 
   // Automatic routing: brand (→ voice + caller-ID + compliance assistant) is
@@ -339,14 +363,14 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
   });
 
   if (result.ok) {
-    await db()
-      .from("lead")
-      .update({
-        disposition: "calling",
-        attempts: attemptNumber,
-        last_attempt_at: new Date().toISOString(),
-      })
-      .eq("id", lead.id);
+    // Resilient write (retry + dead-letter): this is the attempts increment. If it
+    // were dropped silently, `attempts` would under-count and the lead could be
+    // dialed past its cap (a frequency/compliance risk), so never write it raw.
+    await updateLead(lead.id, {
+      disposition: "calling",
+      attempts: attemptNumber,
+      last_attempt_at: new Date().toISOString(),
+    });
   }
 
   return result;
@@ -403,11 +427,12 @@ export async function endCall(callRowId: string): Promise<DialResult> {
   }
 
   // Mark it ended immediately so it leaves the live monitor even if Vapi's
-  // end-of-call webhook is delayed or never arrives.
-  await db()
-    .from("call")
-    .update({ status: "ended", ended_reason: "ended-by-operator", ended_at: new Date().toISOString() })
-    .eq("id", callRowId);
+  // end-of-call webhook is delayed or never arrives (resilient write).
+  await updateCall(callRowId, {
+    status: "ended",
+    ended_reason: "ended-by-operator",
+    ended_at: new Date().toISOString(),
+  });
 
   await recordEvent({
     call_id: callRowId,
@@ -502,12 +527,39 @@ async function sweepStaleCalls(): Promise<void> {
     .update({ status: "ended", ended_reason: "stale-timeout", ended_at: new Date().toISOString() })
     .in("status", ["queued", "ringing", "in-progress"])
     .lt("created_at", cutoff)
-    .select("id");
+    .select("id, lead_id");
   if (error) {
     log.warn("Stale-call sweep failed", { err: error.message });
     return;
   }
-  if (data?.length) log.info("Swept stale calls", { count: data.length });
+  if (!data?.length) return;
+  log.info("Swept stale calls", { count: data.length });
+
+  // Recover any lead pinned in `calling` by a swept call (the missed end-of-call
+  // webhook this sweeper exists for). Without this the lead is never re-dialed —
+  // `calling` isn't a retryable disposition — so it's silently dropped. Return it
+  // to a retryable state with the normal backoff, but only if it has no other
+  // call still in flight. The conditional `.eq("disposition","calling")` makes it
+  // atomic + a no-op if a late webhook already resolved the lead; raw (not
+  // updateLead) is fine here — the sweeper re-runs every tick, so it self-heals.
+  const leadIds = [
+    ...new Set(data.map((r) => (r as { lead_id: string | null }).lead_id).filter(Boolean)),
+  ] as string[];
+  for (const leadId of leadIds) {
+    const { count } = await db()
+      .from("call")
+      .select("id", { count: "exact", head: true })
+      .eq("lead_id", leadId)
+      .in("status", ["queued", "ringing", "in-progress"]);
+    if ((count ?? 0) > 0) continue; // still has a live call — leave it
+    const nextAttempt = new Date(Date.now() + env.retryBackoffMinutes * 60_000).toISOString();
+    const { error: leadErr } = await db()
+      .from("lead")
+      .update({ disposition: "no_answer", next_attempt_after: nextAttempt })
+      .eq("id", leadId)
+      .eq("disposition", "calling");
+    if (leadErr) log.warn("Stale-lead recovery failed", { leadId, err: leadErr.message });
+  }
 }
 
 /** Count calls currently in flight. Scoped to one campaign so multiple running
@@ -528,22 +580,37 @@ async function activeCallCount(campaignId?: string): Promise<number> {
  * window, concurrency, and per-run budget). Self-idles the worker when nothing
  * is running.
  */
-export async function runCampaignTick(): Promise<void> {
-  await sweepStaleCalls();
+// Re-entrancy guard: a tick can take longer than TICK_MS (sweep + N Vapi POSTs),
+// and setInterval doesn't await, so ticks could otherwise overlap and race on
+// activeCallCount / lead selection (concurrency + per-run budget overrun, and
+// double-dialing the same lead). One instance only — see CLAUDE.md before scaling.
+let ticking = false;
 
-  const { data: campaigns } = await db().from("campaign").select("*").eq("status", "running");
-  if (!campaigns?.length) {
-    // Nothing to do — stop the timer; start/boot-resume re-arms it.
-    stopCampaignWorker();
+export async function runCampaignTick(): Promise<void> {
+  if (ticking) {
+    log.warn("Skipping campaign tick — previous tick still running");
     return;
   }
+  ticking = true;
+  try {
+    await sweepStaleCalls();
 
-  for (const campaign of campaigns) {
-    try {
-      await tickCampaign(campaign as Record<string, unknown>);
-    } catch (err) {
-      log.error("Campaign tick failed", { campaignId: (campaign as { id?: string }).id, err: String(err) });
+    const { data: campaigns } = await db().from("campaign").select("*").eq("status", "running");
+    if (!campaigns?.length) {
+      // Nothing to do — stop the timer; start/boot-resume re-arms it.
+      stopCampaignWorker();
+      return;
     }
+
+    for (const campaign of campaigns) {
+      try {
+        await tickCampaign(campaign as Record<string, unknown>);
+      } catch (err) {
+        log.error("Campaign tick failed", { campaignId: (campaign as { id?: string }).id, err: String(err) });
+      }
+    }
+  } finally {
+    ticking = false;
   }
 }
 

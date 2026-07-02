@@ -14,6 +14,7 @@ import { assertVapi, env } from "../src/config/env.ts";
 import { BRANDS, getBrand } from "../src/assistant/brands.ts";
 import { buildOutboundAssistantConfig } from "../src/assistant/outbound/config.ts";
 import { appSettingReady, getBrandAssistantId, getBrandVoiceId, setBrandAssistantId } from "../src/outbound/brandStore.ts";
+import { redactSecretsDeep } from "../src/lib/redact.ts";
 
 const VAPI_API = "https://api.vapi.ai";
 
@@ -25,7 +26,8 @@ async function vapi(path: string, method: string, body?: unknown) {
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(`Vapi ${method} ${path} → ${res.status}: ${JSON.stringify(json).slice(0, 500)}`);
+  if (!res.ok)
+    throw new Error(`Vapi ${method} ${path} → ${res.status}: ${JSON.stringify(redactSecretsDeep(json)).slice(0, 500)}`);
   return json as { id?: string };
 }
 

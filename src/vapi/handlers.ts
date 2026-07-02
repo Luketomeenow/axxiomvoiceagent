@@ -16,6 +16,7 @@ import {
 import { analyzeTranscript } from "../ai/analyzeTranscript.ts";
 import { insertVoiceCall } from "../supabase/voiceCall.ts";
 import { log } from "../lib/logger.ts";
+import { redactPII } from "../lib/redact.ts";
 import { TOOL_NAMES } from "../assistant/tools.ts";
 import {
   callerNumber,
@@ -154,7 +155,7 @@ export async function handleToolCalls(message: VapiMessage): Promise<VapiToolRes
   for (const call of toolCallsOf(message)) {
     const name = toolName(call);
     const args = toolArgs(call);
-    log.info("Tool call", { callId: message.call?.id, tool: name, args });
+    log.info("Tool call", { callId: message.call?.id, tool: name, args: redactPII(args) });
 
     let result: string;
     try {

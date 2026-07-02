@@ -17,7 +17,14 @@ import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import * as XLSX from "xlsx";
 
+import { env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
+import { requireAuth } from "../lib/auth.ts";
+import { rateLimit } from "../lib/rateLimit.ts";
+import { maskPhone } from "../lib/redact.ts";
+
+// Reject uploads larger than this (leads workbooks are small; this bounds abuse).
+const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
 import {
   autoAssignCampaignBrand,
   callNow,
@@ -27,14 +34,34 @@ import {
   testCall,
   type TestCallInput,
 } from "./dialer.ts";
-import { db } from "./db.ts";
+import { db, deleteLeadDataByPhone, purgeOldPii, replayFailedOps } from "./db.ts";
+import { toE164 } from "./phone.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
 import { BRANDS, getBrand } from "../assistant/brands.ts";
 
 export const outbound = new Hono();
 
-outbound.use("/outbound/*", cors());
+// CORS locked to the dashboard origin(s) (DASHBOARD_ORIGIN, comma-separated).
+// Empty = no cross-origin allowed (fail closed) — set it in production.
+const allowedOrigins = env.dashboardOrigin
+  ? env.dashboardOrigin.split(",").map((s) => s.trim()).filter(Boolean)
+  : [];
+
+// Order matters: CORS first (so preflight gets headers + downstream lets OPTIONS
+// through), then rate limit (cheap, in front of the auth network call), then
+// auth on every /outbound/* request.
+outbound.use(
+  "/outbound/*",
+  cors({
+    origin: allowedOrigins,
+    allowHeaders: ["Authorization", "Content-Type"],
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    credentials: false,
+  }),
+);
+outbound.use("/outbound/*", rateLimit({ windowMs: 60_000, max: 120 }));
+outbound.use("/outbound/*", requireAuth);
 
 outbound.get("/outbound/campaigns", async (c) => {
   const { data, error } = await db().from("campaign").select("*").order("created_at", { ascending: false });
@@ -110,6 +137,35 @@ outbound.get("/outbound/analytics", async (c) => {
     unresolvedFailures: deadLetters.count ?? 0,
     days,
   });
+});
+
+// Re-apply dead-lettered writes (outbound.failed_op) so lost lead/call/event
+// writes are recovered, not just counted on the analytics card.
+outbound.post("/outbound/failed-ops/replay", async (c) => {
+  const result = await replayFailedOps();
+  log.info("Failed-op replay requested", result);
+  return c.json({ ok: true, ...result });
+});
+
+// Data retention: purge call transcripts/recordings/raw payloads older than N
+// days (default PII_RETAIN_DAYS). Run on a schedule or on demand.
+outbound.post("/outbound/retention/purge", async (c) => {
+  const body = await c.req.json<{ days?: number }>().catch(() => ({}) as { days?: number });
+  const days = typeof body.days === "number" && body.days > 0 ? Math.floor(body.days) : undefined;
+  const result = await purgeOldPii(days);
+  log.info("Retention purge requested", { days: days ?? "default", ...result });
+  return c.json({ ok: true, ...result });
+});
+
+// DSAR / right-to-erasure: delete all data for a phone number (leads + calls +
+// events), keeping only the DNC suppression entry so it's never contacted again.
+outbound.post("/outbound/dsar/delete", async (c) => {
+  const body = await c.req.json<{ phone?: string }>().catch(() => ({}) as { phone?: string });
+  const phone = toE164(body.phone) ?? body.phone?.trim();
+  if (!phone) return c.json({ ok: false, error: "phone is required" }, 400);
+  const result = await deleteLeadDataByPhone(phone);
+  log.info("DSAR delete requested", { phone: maskPhone(phone), ...result });
+  return c.json({ ok: true, ...result });
 });
 
 // Per-call compliance audit rows (disclosure spoken? consent captured? DNC?).
@@ -249,7 +305,6 @@ outbound.post("/outbound/campaign/:id/delete", async (c) => {
 // POC: issue a signed URL so the dashboard can talk to the ElevenLabs agent in
 // the browser (mic) without exposing the API key. Lets you A/B it against Vapi.
 outbound.get("/outbound/el-agent/signed-url", async (c) => {
-  const { env } = await import("../config/env.ts");
   if (!env.elevenLabsApiKey) return c.json({ ok: false, error: "ELEVENLABS_API_KEY not set" }, 400);
   if (!env.elevenLabsAgentId) return c.json({ ok: false, error: "ELEVENLABS_AGENT_ID not set" }, 400);
   const res = await fetch(
@@ -304,7 +359,7 @@ outbound.post("/outbound/test-call", async (c) => {
   const body = await c.req.json<TestCallInput>().catch(() => ({}) as TestCallInput);
   if (!body.phone) return c.json({ ok: false, reason: "phone is required" }, 400);
   const result = await testCall(body);
-  log.info("Test call requested", { phone: body.phone, ok: result.ok });
+  log.info("Test call requested", { phone: maskPhone(body.phone), ok: result.ok });
   return c.json(result, result.ok ? 200 : 400);
 });
 
@@ -322,6 +377,9 @@ async function readUpload(c: Context): Promise<Uint8Array | null> {
 // campaign-ready sheet so the UI can preselect it.
 outbound.post("/outbound/import/preview", async (c) => {
   try {
+    if (Number(c.req.header("content-length") ?? 0) > MAX_UPLOAD_BYTES) {
+      return c.json({ error: "file too large" }, 413);
+    }
     const bytes = await readUpload(c);
     if (!bytes) return c.json({ error: "no file uploaded (field 'file')" }, 400);
     const sheets = listSheets(bytes);
@@ -335,6 +393,9 @@ outbound.post("/outbound/import/preview", async (c) => {
 // Import the chosen sheet of leads into a campaign.
 outbound.post("/outbound/import", async (c) => {
   try {
+    if (Number(c.req.header("content-length") ?? 0) > MAX_UPLOAD_BYTES) {
+      return c.json({ error: "file too large" }, 413);
+    }
     const body = await c.req.parseBody();
     const file = body["file"];
     if (!file || typeof file === "string") return c.json({ error: "no file uploaded (field 'file')" }, 400);

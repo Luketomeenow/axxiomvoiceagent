@@ -350,7 +350,9 @@ exception when duplicate_object then null; end $$;
 -- ---------------------------------------------------------------------------
 
 -- Per-campaign funnel: leads -> contacted -> qualified, with attempt totals.
-create or replace view outbound.v_campaign_funnel as
+-- security_invoker: the view runs with the querying user's privileges + RLS, so
+-- it can't be used to bypass the authenticated-only policies below.
+create or replace view outbound.v_campaign_funnel with (security_invoker = on) as
 select
   c.id          as campaign_id,
   c.name,
@@ -371,7 +373,7 @@ left join outbound.lead l on l.campaign_id = c.id
 group by c.id, c.name, c.region, c.brand, c.status;
 
 -- Daily call metrics (by campaign), in Pacific time for reporting.
-create or replace view outbound.v_daily_metrics as
+create or replace view outbound.v_daily_metrics with (security_invoker = on) as
 select
   (started_at at time zone 'America/Los_Angeles')::date                        as day,
   campaign_id,
@@ -387,7 +389,7 @@ where started_at is not null
 group by 1, 2;
 
 -- Call quality, by campaign + brand.
-create or replace view outbound.v_call_quality as
+create or replace view outbound.v_call_quality with (security_invoker = on) as
 select
   campaign_id,
   brand,
@@ -403,7 +405,7 @@ from outbound.call
 group by campaign_id, brand;
 
 -- Attempts-to-outcome distribution: how many dials it takes per lead.
-create or replace view outbound.v_attempt_distribution as
+create or replace view outbound.v_attempt_distribution with (security_invoker = on) as
 select
   campaign_id,
   attempts,
@@ -413,7 +415,7 @@ from outbound.lead
 group by campaign_id, attempts;
 
 -- Per-call compliance audit: was the disclosure spoken + consent captured?
-create or replace view outbound.v_compliance_audit as
+create or replace view outbound.v_compliance_audit with (security_invoker = on) as
 select
   c.id            as call_id,
   c.campaign_id,
@@ -436,4 +438,36 @@ from outbound.call c;
 grant select on outbound.v_campaign_funnel, outbound.v_daily_metrics,
                outbound.v_call_quality, outbound.v_attempt_distribution,
                outbound.v_compliance_audit
-  to anon, authenticated, service_role;
+  to authenticated, service_role;
+
+-- ===========================================================================
+-- SECURITY HARDENING (C2) — dashboard now signs in with Supabase Auth, so lock
+-- ALL reads to the `authenticated` role. The browser-shipped anon key can no
+-- longer read lead PII, transcripts, recordings, or per-call phone numbers.
+-- Service role (backend) bypasses RLS and is unaffected. Safe/idempotent to re-run.
+--
+-- NOTE: this supersedes the permissive `for select using (true)` policies and the
+-- `grant select ... to anon` above (kept earlier in the file for history). When
+-- the whole script is run top-to-bottom, this block wins.
+-- ===========================================================================
+
+-- 1) Replace each permissive SELECT policy with an authenticated-only one.
+do $$
+declare t text;
+begin
+  foreach t in array array['lead','call','call_event','campaign','code_reference','failed_op'] loop
+    execute format('drop policy if exists %I on outbound.%I', 'dashboard read ' || t, t);
+    execute format('drop policy if exists %I on outbound.%I', t || ' authenticated read', t);
+    execute format(
+      'create policy %I on outbound.%I for select to authenticated using (true)',
+      t || ' authenticated read', t);
+  end loop;
+end $$;
+
+-- 2) Revoke anon's table + view read grants (existing objects + future defaults).
+revoke select on all tables in schema outbound from anon;
+alter default privileges in schema outbound revoke select on tables from anon;
+revoke select on outbound.v_campaign_funnel, outbound.v_daily_metrics,
+               outbound.v_call_quality, outbound.v_attempt_distribution,
+               outbound.v_compliance_audit
+  from anon;

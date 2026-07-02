@@ -1,16 +1,27 @@
-import { API_BASE } from "./supabase";
+import { API_BASE, getAccessToken } from "./supabase";
+
+/** Merge the signed-in user's JWT into request headers (Authorization: Bearer). */
+async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
+  const token = await getAccessToken();
+  return token ? { ...base, Authorization: `Bearer ${token}` } : base;
+}
+
+async function get(path: string) {
+  const res = await fetch(`${API_BASE}${path}`, { headers: await authHeaders() });
+  return res.json();
+}
 
 async function post(path: string, body?: unknown) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: await authHeaders({ "Content-Type": "application/json" }),
     body: body ? JSON.stringify(body) : undefined,
   });
   return res.json();
 }
 
 async function postForm(path: string, form: FormData) {
-  const res = await fetch(`${API_BASE}${path}`, { method: "POST", body: form });
+  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers: await authHeaders(), body: form });
   return res.json();
 }
 
@@ -154,17 +165,15 @@ export interface ComplianceResponse {
 }
 
 export const api = {
-  analytics: async (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
+  analytics: (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
     const q = new URLSearchParams({ days: String(days) });
     if (campaignId) q.set("campaignId", campaignId);
-    const res = await fetch(`${API_BASE}/outbound/analytics?${q.toString()}`);
-    return res.json();
+    return get(`/outbound/analytics?${q.toString()}`);
   },
-  compliance: async (campaignId?: string | null, limit = 100): Promise<ComplianceResponse> => {
+  compliance: (campaignId?: string | null, limit = 100): Promise<ComplianceResponse> => {
     const q = new URLSearchParams({ limit: String(limit) });
     if (campaignId) q.set("campaignId", campaignId);
-    const res = await fetch(`${API_BASE}/outbound/analytics/compliance?${q.toString()}`);
-    return res.json();
+    return get(`/outbound/analytics/compliance?${q.toString()}`);
   },
   startCampaign: (campaignId?: string, opts?: { maxCalls?: number | null; maxConcurrent?: number }) =>
     post("/outbound/campaign/start", { campaignId, ...opts }),
@@ -175,22 +184,16 @@ export const api = {
   ) => post(`/outbound/campaign/${id}/update`, patch),
   deleteCampaign: (id: string) => post(`/outbound/campaign/${id}/delete`),
   brandList: async (): Promise<BrandInfoOption[]> => {
-    const res = await fetch(`${API_BASE}/outbound/brand-list`);
-    const json = (await res.json()) as { brands?: BrandInfoOption[] };
+    const json = (await get(`/outbound/brand-list`)) as { brands?: BrandInfoOption[] };
     return json.brands ?? [];
   },
   callNow: (leadId: string) => post(`/outbound/call-now/${leadId}`),
   endCall: (callId: string) => post(`/outbound/calls/${callId}/end`),
   testCall: (body: TestCallBody) => post("/outbound/test-call", body),
-  getVoices: async (): Promise<VoicesResponse> => {
-    const res = await fetch(`${API_BASE}/outbound/voices`);
-    return res.json();
-  },
+  getVoices: (): Promise<VoicesResponse> => get(`/outbound/voices`),
   setVoice: (voiceId: string, target: VoiceTarget) => post("/outbound/voice", { voiceId, target }),
-  elAgentSignedUrl: async (): Promise<{ ok: boolean; signedUrl?: string; agentId?: string; error?: string }> => {
-    const res = await fetch(`${API_BASE}/outbound/el-agent/signed-url`);
-    return res.json();
-  },
+  elAgentSignedUrl: (): Promise<{ ok: boolean; signedUrl?: string; agentId?: string; error?: string }> =>
+    get(`/outbound/el-agent/signed-url`),
   importPreview: (file: File): Promise<{ sheets?: SheetInfo[]; suggested?: string | null; error?: string }> => {
     const form = new FormData();
     form.append("file", file);
@@ -207,20 +210,32 @@ export const api = {
   brands: async (campaignId?: string | null): Promise<BrandInfo[]> => {
     const q = new URLSearchParams();
     if (campaignId) q.set("campaignId", campaignId);
-    const res = await fetch(`${API_BASE}/outbound/brands?${q.toString()}`);
-    const json = (await res.json()) as { brands?: BrandInfo[] };
+    const json = (await get(`/outbound/brands?${q.toString()}`)) as { brands?: BrandInfo[] };
     return json.brands ?? [];
   },
-  exportUrl: (
+  // Authenticated download: a bearer header can't ride a bare <a href>, so fetch
+  // the export with the JWT and trigger a client-side blob download.
+  exportDownload: async (
     disposition: string | "all",
     format: "csv" | "xlsx",
     campaignId?: string | null,
     brand?: string | null,
-  ) => {
+  ): Promise<void> => {
     const q = new URLSearchParams({ format });
     if (disposition !== "all") q.set("disposition", disposition);
     if (campaignId) q.set("campaignId", campaignId);
     if (brand) q.set("brand", brand);
-    return `${API_BASE}/outbound/export?${q.toString()}`;
+    const res = await fetch(`${API_BASE}/outbound/export?${q.toString()}`, { headers: await authHeaders() });
+    if (!res.ok) throw new Error(`export failed: ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const cd = res.headers.get("Content-Disposition") ?? "";
+    a.download = cd.match(/filename="?([^"]+)"?/)?.[1] ?? `axxiom_leads.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   },
 };

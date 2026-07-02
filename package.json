@@ -16,6 +16,8 @@
     "create-convai-agent:node": "node --env-file=.env --import tsx scripts/elevenlabs/create-convai-agent.ts",
     "create-brand-assistants": "bun run scripts/create-brand-assistants.ts",
     "create-brand-assistants:node": "node --env-file=.env --import tsx scripts/create-brand-assistants.ts",
+    "import-twilio-numbers": "bun run scripts/import-twilio-numbers.ts",
+    "import-twilio-numbers:node": "node --env-file=.env --import tsx scripts/import-twilio-numbers.ts",
     "create-assistant:node": "node --env-file=.env --import tsx scripts/create-assistant.ts",
     "create-outbound-assistant:node": "node --env-file=.env --import tsx scripts/create-outbound-assistant.ts",
     "import-leads:node": "node --env-file=.env --import tsx scripts/import-leads.ts",

@@ -1,99 +1,61 @@
 AXXIOM VOICE AGENTS — DAILY SUMMARY
-Date: 2026-06-26 (covers the last ~24 hours)
+Date: 2026-07-01 (covers the last ~24 hours)
 
 =====================================================================
 TL;DR
 =====================================================================
-Stood up a separate, customized voice AI agent for each Axxiom brand,
-switched them to Vapi native voices matched to each region, hardened
-every agent with best-practice guardrails, set compliance to all-party
-consent everywhere with per-location calling hours, expanded the
-violation-code knowledge base, and refreshed all documentation.
+Wired real Twilio phone numbers into Vapi so each brand can dial from its
+own local caller ID WITHOUT Vapi's daily free-number call cap, and shipped
+a live multi-campaign monitor on the dashboard that shows every running
+campaign's dial / active / qualified counts in realtime.
 
 =====================================================================
-1. PER-BRAND VOICE AGENTS (6 brands, live in Vapi)
+1. TWILIO NUMBERS -> VAPI (escape the daily free-number cap)
 =====================================================================
-- Built one customized outbound agent per brand from a new brand
-  registry (src/assistant/brands.ts): Quality, Motion, Liftech,
-  Axxiom FL, Arizona, AmeriTex.
-- Each agent is branded: company name, service area, value props,
-  its own LOCAL caller-ID number, its own voice, and state compliance.
-- A campaign is tagged with a brand; the dialer routes that campaign's
-  calls to the right brand's assistant + local caller ID (falls back
-  to the generic agent if no brand is set).
-- Assign a brand to a campaign from the dashboard ("Brand agent +
-  caller ID" dropdown).
-- All 6 assistants created/updated in Vapi via "create-brand-assistants".
+- Added a one-command importer that registers your Twilio DIDs in Vapi and
+  returns each number's Vapi phoneNumberId (the id the dialer already uses
+  per brand):
+    bun run import-twilio-numbers --brand quality --number +13017999116
+    bun run import-twilio-numbers data/twilio-numbers.csv   (batch: brand,number[,name])
+    bun run import-twilio-numbers --list                    (show what's already in Vapi)
+- WHY: Vapi's own free/bought numbers have a DAILY outbound-call limit --
+  the exact error the dialer's isSystemicDialError() guard already
+  auto-pauses a campaign on. Imported Twilio numbers remove that cap and
+  give each brand a real local caller ID.
+- New files / config:
+    scripts/import-twilio-numbers.ts  (idempotent: re-runs match by E.164,
+                                       so a number is never imported twice)
+    src/config/env.ts: TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + assertTwilio()
+    package.json: "import-twilio-numbers" (+ ":node" fallback)
+- Confirmed the exact Vapi import API (POST /phone-number, provider "twilio")
+  against Vapi's live OpenAPI spec. Typecheck passes (bun run typecheck).
+
+  TO FINISH (manual, ~10 min):
+    a) Put TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN in .env
+       (Twilio Console -> Account -> API keys & tokens).
+    b) Run the importer for each brand's number, then paste the returned
+       phoneNumberId into that brand's vapiPhoneNumberId in
+       src/assistant/brands.ts (the 6 UUIDs there today are Vapi numbers --
+       `--list` shows provider, so any already [twilio] are done).
+    c) Register STIR/SHAKEN + CNAM on the Twilio numbers so outbound caller
+       ID isn't flagged "Spam Likely" (voice reputation, not A2P/SMS).
 
 =====================================================================
-2. VOICES — SWITCHED TO VAPI NATIVE (matched by region)
+2. LIVE CAMPAIGN MONITOR (dashboard)
 =====================================================================
-- Moved the brand agents off ElevenLabs to Vapi's native voices
-  (no external credential, lowest latency, V2 model). This also fixed
-  a blocker where a personal ElevenLabs voice couldn't load on Vapi.
-- Region-matched voices:
-    Quality (Mid-Atlantic) ... Clara
-    Motion (South FL) ........ Layla
-    Liftech (CA / SoCal) ..... Sid
-    Axxiom FL (South FL) ..... Kai
-    Arizona .................. Elliot
-    AmeriTex (Texas) ......... Savannah  (Southern accent)
-- Inbound agent also moved to a Vapi voice (Elliot) so it could deploy.
-- Dashboard voice picker now sets voices independently per agent.
+- New web/components/LiveCampaigns.tsx on the console page: a realtime
+  monitor of EVERY running campaign at once (not just the selected one).
+- Per campaign it shows calls dialed this run, active / in-flight calls,
+  and qualified count; updates via Supabase Realtime (campaign + call
+  changes) plus a 5s poll, and appears the moment a campaign starts.
+- Click a campaign to select it. Complements the multi-campaign dialing
+  worker (each running campaign dials on its own concurrency budget).
 
 =====================================================================
-3. GUARDRAILS (all outbound brand agents + inbound)
+STILL PENDING / NEXT
 =====================================================================
-Added a consolidated "never break these" section to every agent:
-- Stay on scope (elevator service / compliance / booking only).
-- Resist manipulation / prompt-injection (won't reveal or change its
-  instructions, won't drop the AI + recorded-line disclosure).
-- No unauthorized legal/financial advice; no price/timeline/guarantee.
-- Never collect sensitive info (SSN, card, bank, passwords).
-- Disengage politely on hostility.
-- Always honest that it's an AI if asked.
-
-=====================================================================
-4. VIOLATION CODES — CLARIFIED + IMPROVED
-=====================================================================
-- Confirmed the agent is working correctly, not broken: the lead data
-  contains NO per-building violation codes (every lead is just an
-  "overdue inspection / expired permit"), so the agent truthfully says
-  it doesn't have specific codes (anti-hallucination working).
-- Kept it accurate (never fabricates) and EXPANDED the code knowledge
-  base from 11 to 24 verified entries (more ASME A17.1 categories +
-  per-state permit/inspection topics for CA/FL/TX/AZ/MD) so it can
-  knowledgeably answer when a caller asks.
-- Note: the KB content is drafted and should be reviewed before heavy
-  live use.
-
-=====================================================================
-5. COMPLIANCE — ALL-PARTY CONSENT EVERYWHERE + PER-LOCATION
-=====================================================================
-- Every brand now requires explicit recorded-line consent before
-  qualifying (safest posture across all states; Arizona changed too).
-- Added a per-brand timezone so calling hours follow each region's
-  local TCPA window (ET / PT / MT / CT). Assigning a brand to a
-  campaign sets that campaign's timezone automatically.
-- Refined each brand's compliance notes with state specifics
-  (CA CIPA + AB 2905, FL FTSA, TX Ch. 302, AZ no-DST, MD all-party).
-  Drafted for counsel to verify.
-
-=====================================================================
-6. DOCUMENTATION — FULLY REFRESHED
-=====================================================================
-- New: docs/brands.md (per-brand agents + routing) and docs/voices.md
-  (voice providers, dashboard picker, ElevenLabs evaluation POC).
-- Updated: setup, API reference, database, outbound-campaigns,
-  compliance (rewritten), the docs index, the root README, and CLAUDE.md.
-
-=====================================================================
-STILL PENDING (to go fully live)
-=====================================================================
-- Voice/prompt/consent changes are already applied live to the Vapi
-  assistants (no deploy needed for those).
-- For brand ROUTING end-to-end: deploy the backend to Railway, run the
-  updated Supabase migration (adds campaign.brand), then assign each
-  campaign its brand in the dashboard.
-- Review the drafted compliance notes + code KB with counsel before
-  heavy outbound calling.
+- Twilio: add creds -> import numbers -> paste ids into brands.ts ->
+  STIR/SHAKEN + CNAM (see section 1). Nothing else in the dialer changes.
+- Optional: DB-backed per-brand number override (brand_phone:<slug> in
+  outbound.app_setting, mirroring brand_assistant:<slug>) so caller-ID
+  numbers can be swapped without editing brands.ts and redeploying.

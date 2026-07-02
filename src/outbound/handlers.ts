@@ -8,6 +8,7 @@
 import { env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
 import { db, recordEvent, suppressNumber, updateCall, updateLead, type Disposition } from "./db.ts";
+import { redactPII } from "../lib/redact.ts";
 import { OUTBOUND_TOOL_NAMES } from "../assistant/outbound/tools.ts";
 import {
   callMetadata,
@@ -76,6 +77,8 @@ function stableArgs(args: Record<string, unknown>): string {
 /** Firm redirect when a tool is (re)called unnecessarily — what breaks the loop. */
 function repeatRedirect(tool: string): string {
   switch (tool) {
+    case OUTBOUND_TOOL_NAMES.confirmConsent:
+      return "Consent is already recorded for this call — do NOT call confirmConsent again. Continue the conversation.";
     case OUTBOUND_TOOL_NAMES.qualifyLead:
       return "You already saved the lead's details — do NOT call qualifyLead again. Keep talking with the caller, and when you're ready to finish, call recordDisposition exactly once.";
     case OUTBOUND_TOOL_NAMES.lookupViolationCode:
@@ -108,6 +111,39 @@ export function clearToolHistory(message: VapiMessage): void {
 
 // --- Tool implementations --------------------------------------------------
 
+/**
+ * Recording-consent capture (CIPA all-party). Called when the callee explicitly
+ * agrees — or declines — to continue on a recorded line, before qualifying. Only
+ * an explicit `granted:true` stamps consent; a decline is logged but never marks
+ * consent, so the audit reflects what the person actually said.
+ */
+async function runConfirmConsent(args: Record<string, unknown>, message: VapiMessage): Promise<string> {
+  const leadId = leadIdOf(message);
+  const callRowId = await resolveCallRowId(message);
+  const granted = args.granted === true;
+  const nowIso = new Date().toISOString();
+
+  if (granted) {
+    if (leadId) await updateLead(leadId, { consent_recording: true, consent_recording_at: nowIso });
+    if (callRowId) await updateCall(callRowId, { consent_captured: true, consent_at: nowIso });
+  } else if (leadId) {
+    // Record the refusal on the lead so we don't later assume consent.
+    await updateLead(leadId, { consent_recording: false });
+  }
+
+  await recordEvent({
+    call_id: callRowId,
+    vapi_call_id: message.call?.id,
+    type: "consent",
+    text: granted ? "recording consent granted" : "recording consent declined",
+    payload: { granted, at: nowIso },
+  });
+
+  return granted
+    ? "Recording consent captured. You may continue and qualify the lead."
+    : "They did not consent to recording — do NOT continue qualifying. Offer a teammate follow-up, or if they want off the list call optOut, then end the call.";
+}
+
 async function runQualifyLead(args: Record<string, unknown>, message: VapiMessage): Promise<string> {
   const leadId = leadIdOf(message);
   const callRowId = await resolveCallRowId(message);
@@ -128,14 +164,13 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
   ].filter(Boolean);
   const notes = noteParts.join(" | ");
 
-  const nowIso = new Date().toISOString();
   if (leadId) {
     // Write the structured, sales-ready fields (not just the free-text note),
     // so the sales team gets clean columns to act on. Retries + dead-letters on
-    // failure so a captured qualification is never silently lost.
+    // failure so a captured qualification is never silently lost. NOTE: recording
+    // consent is NOT written here — it's captured separately by confirmConsent so
+    // the audit reflects an actual affirmative, not "reached qualification".
     await updateLead(leadId, {
-      consent_recording: true,
-      consent_recording_at: nowIso,
       notes: notes || null,
       decision_maker: typeof args.decisionMaker === "boolean" ? args.decisionMaker : null,
       current_provider: str(args.currentProvider) ?? null,
@@ -147,18 +182,6 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
       contact_email: str(args.bestCallbackEmail),
     });
   }
-  // Stamp recording consent on the call row itself (previously `consent_captured`
-  // was defined in the schema but never written) so each call carries its own
-  // CIPA audit flag, not just the lead.
-  if (callRowId) await updateCall(callRowId, { consent_captured: true, consent_at: nowIso });
-  // Explicit consent moment in the audit trail (distinct from the tool-call log).
-  await recordEvent({
-    call_id: callRowId,
-    vapi_call_id: message.call?.id,
-    type: "consent",
-    text: "recording consent captured (qualifyLead)",
-    payload: { consent: true, at: nowIso },
-  });
   await recordEvent({
     call_id: callRowId,
     vapi_call_id: message.call?.id,
@@ -294,7 +317,7 @@ export async function handleOutboundToolCalls(message: VapiMessage): Promise<Vap
     const args = toolArgs(call);
     // Echo Vapi's tool-call id so the result is delivered back to the model.
     const toolCallId = call.id ?? `${name}-${results.length}`;
-    log.info("Outbound tool call", { callId: message.call?.id, tool: name, args });
+    log.info("Outbound tool call", { callId: message.call?.id, tool: name, args: redactPII(args) });
 
     // Anti-loop: an identical repeat, or too many runs of the same tool, gets a
     // firm redirect instead of re-running — no duplicate DB work, instant reply.
@@ -308,7 +331,9 @@ export async function handleOutboundToolCalls(message: VapiMessage): Promise<Vap
 
     let result: string;
     try {
-      if (name === OUTBOUND_TOOL_NAMES.qualifyLead) {
+      if (name === OUTBOUND_TOOL_NAMES.confirmConsent) {
+        result = await runConfirmConsent(args, message);
+      } else if (name === OUTBOUND_TOOL_NAMES.qualifyLead) {
         result = await runQualifyLead(args, message);
       } else if (name === OUTBOUND_TOOL_NAMES.recordDisposition) {
         result = await runRecordDisposition(args, message);
@@ -348,7 +373,12 @@ export async function handleOutboundStatusUpdate(message: VapiMessage): Promise<
   };
   const mapped = map[status] ?? status;
   if (callRowId) {
-    await db().from("call").update({ status: mapped }).eq("id", callRowId);
+    // Never resurrect a call that's already ended: a late/retried "in-progress"
+    // status arriving after end-of-call (or the stale sweeper) must not flip it
+    // back to live and re-consume a concurrency slot. Terminal is terminal.
+    let q = db().from("call").update({ status: mapped }).eq("id", callRowId);
+    if (mapped !== "ended") q = q.neq("status", "ended");
+    await q;
   }
   await recordEvent({
     call_id: callRowId,
@@ -404,7 +434,11 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
     message.analysis?.successEvaluation == null ? null : String(message.analysis.successEvaluation);
 
   if (callRowId) {
-    const { data: existing } = await db().from("call").select("disposition").eq("id", callRowId).maybeSingle();
+    const { data: existing } = await db()
+      .from("call")
+      .select("disposition, disclosed_at, started_at")
+      .eq("id", callRowId)
+      .maybeSingle();
     const update: Record<string, unknown> = {
       status: "ended",
       ended_reason: message.endedReason ?? null,
@@ -422,6 +456,13 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
       ended_at: new Date().toISOString(),
       raw: message,
     };
+    // Backfill the AB 2905 / CIPA disclosure timestamp. The opener is
+    // deterministic (assistant-speaks-first), so if the assistant spoke at all
+    // (we have a transcript) the disclosure played — this credits fully-compliant
+    // calls whose live `transcript` webhook never arrived to stamp disclosed_at.
+    if (!existing?.disclosed_at && transcript) {
+      update.disclosed_at = (existing?.started_at as string) ?? new Date().toISOString();
+    }
     // If no tool set a disposition, infer one from how the call ended.
     if (!existing?.disposition) {
       const reason = (message.endedReason ?? "").toLowerCase();

@@ -31,6 +31,18 @@ export function ExportButtons({ campaignId }: { campaignId: string | null }) {
   }, [campaignId]);
 
   const brandLabel = brand || "all brands";
+  const [downloading, setDownloading] = useState<"xlsx" | "csv" | null>(null);
+
+  async function download(format: "xlsx" | "csv") {
+    setDownloading(format);
+    try {
+      await api.exportDownload(disposition, format, campaignId, brand || null);
+    } catch (err) {
+      alert(`Export failed: ${String(err)}`);
+    } finally {
+      setDownloading(null);
+    }
+  }
 
   return (
     <div className="card card-pad flex flex-wrap items-center gap-2">
@@ -62,20 +74,22 @@ export function ExportButtons({ campaignId }: { campaignId: string | null }) {
         ))}
       </select>
 
-      <a
-        href={api.exportUrl(disposition, "xlsx", campaignId, brand || null)}
+      <button
+        onClick={() => download("xlsx")}
+        disabled={downloading !== null}
         className="btn btn-primary btn-xs"
         title={`Export ${disposition} leads for ${brandLabel} as Excel`}
       >
-        Excel
-      </a>
-      <a
-        href={api.exportUrl(disposition, "csv", campaignId, brand || null)}
+        {downloading === "xlsx" ? "…" : "Excel"}
+      </button>
+      <button
+        onClick={() => download("csv")}
+        disabled={downloading !== null}
         className="btn btn-ghost btn-xs"
         title={`Export ${disposition} leads for ${brandLabel} as CSV`}
       >
-        CSV
-      </a>
+        {downloading === "csv" ? "…" : "CSV"}
+      </button>
     </div>
   );
 }

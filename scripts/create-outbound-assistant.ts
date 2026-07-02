@@ -12,6 +12,7 @@
 
 import { assertVapi, env } from "../src/config/env.ts";
 import { buildOutboundAssistantConfig } from "../src/assistant/outbound/config.ts";
+import { redactSecretsDeep } from "../src/lib/redact.ts";
 
 const VAPI_API = "https://api.vapi.ai";
 
@@ -28,7 +29,7 @@ async function vapi(path: string, method: string, body?: unknown) {
   const json = text ? JSON.parse(text) : {};
   if (!res.ok) {
     console.error(`Vapi ${method} ${path} → ${res.status}`);
-    console.error(JSON.stringify(json, null, 2));
+    console.error(JSON.stringify(redactSecretsDeep(json), null, 2));
     process.exit(1);
   }
   return json as { id?: string };

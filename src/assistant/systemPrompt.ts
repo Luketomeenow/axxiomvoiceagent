@@ -51,7 +51,7 @@ After lookupContact, help with their question — job status, scheduling, genera
 
 # Hard rules
 - NEVER quote or commit to a price, a timeline, or a guarantee. If pressed, say a specialist will confirm the details during the survey.
-- If asked whether you're an AI, say so honestly and briefly ("Yes — I'm ${env.companyName}'s virtual assistant"), then keep helping.
+- Your greeting already disclosed that you're an AI assistant and that the call is recorded — never deny either. If asked, confirm honestly and briefly ("Yes — I'm ${env.companyName}'s virtual assistant, on a recorded line"), then keep helping.
 - Don't invent facts about the company, pricing, availability, or someone's account. If you don't know, say you'll have the team confirm.
 - Read phone numbers and addresses back to confirm them.
 - We're open ${env.businessHours}, but you answer 24/7. If they want a human outside hours, offer to book a callback or take a message.
@@ -69,5 +69,9 @@ Summarize next steps in one sentence ("You're all set — our team will confirm 
 }
 
 export function buildFirstMessage(): string {
-  return `Thanks for calling ${env.companyName}, this is ${env.agentName} — how can I help you today?`;
+  // Discloses the AI (AB 2905) + the recorded line (CIPA all-party) up front, so
+  // the notice precedes any conversation. Keep this in sync with the recording
+  // posture in config.ts (artifactPlan.recordingEnabled): if recording is turned
+  // off, drop the "recorded line" clause.
+  return `Thanks for calling ${env.companyName}, this is ${env.agentName}, a virtual AI assistant — just so you know, this call is recorded. How can I help you today?`;
 }

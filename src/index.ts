@@ -12,6 +12,7 @@ import { Hono } from "hono";
 
 import { env, logConfigSummary } from "./config/env.ts";
 import { log } from "./lib/logger.ts";
+import { safeEqual } from "./lib/auth.ts";
 import { handleEndOfCallReport, handleToolCalls } from "./vapi/handlers.ts";
 import {
   handleOutboundEndOfCall,
@@ -26,21 +27,45 @@ import type { VapiWebhookBody } from "./vapi/types.ts";
 const app = new Hono();
 
 app.get("/", (c) => c.text("Axxiom voice agents — see /health"));
+// Fast, dependency-free liveness check for Railway (stays green during boot).
 app.get("/health", (c) => c.json({ ok: true, service: "axxiom-voice-agents" }));
+
+// Dependency-aware readiness: confirms Supabase is reachable AND the `outbound`
+// schema is actually exposed (a common misconfig that makes every DNC check
+// fail-closed, silently halting the dialer while /health stays green).
+app.get("/ready", async (c) => {
+  const checks: Record<string, boolean> = {};
+  if (env.supabaseUrl && env.supabaseServiceRoleKey) {
+    try {
+      const { db } = await import("./outbound/db.ts");
+      const { error } = await db().from("campaign").select("id", { count: "exact", head: true });
+      checks.outboundSchema = !error;
+    } catch {
+      checks.outboundSchema = false;
+    }
+  }
+  const ok = Object.values(checks).every(Boolean);
+  return c.json({ ok, checks }, ok ? 200 : 503);
+});
 
 // Outbound campaign API (campaigns, stats, start/pause, call-now, export).
 app.route("/", outbound);
 
 app.post("/vapi/webhook", async (c) => {
-  // Verify the shared secret Vapi sends with every server message.
+  // Verify the shared secret Vapi sends with every server message. Constant-time
+  // compare, and FAIL CLOSED when no secret is configured (503) unless the
+  // operator explicitly opted into insecure mode for local dev.
   if (env.vapiServerSecret) {
-    const provided = c.req.header("x-vapi-secret");
-    if (provided !== env.vapiServerSecret) {
+    const provided = c.req.header("x-vapi-secret") ?? "";
+    if (!safeEqual(provided, env.vapiServerSecret)) {
       log.warn("Rejected webhook — bad x-vapi-secret");
       return c.json({ error: "unauthorized" }, 401);
     }
+  } else if (!env.allowInsecureWebhook) {
+    log.error("Refusing webhook — VAPI_SERVER_SECRET not set (set ALLOW_INSECURE_WEBHOOK=true for local dev only)");
+    return c.json({ error: "webhook not configured" }, 503);
   } else {
-    log.warn("VAPI_SERVER_SECRET not set — webhook is unauthenticated");
+    log.warn("VAPI_SERVER_SECRET not set — webhook is UNAUTHENTICATED (ALLOW_INSECURE_WEBHOOK)");
   }
 
   let body: VapiWebhookBody;
@@ -101,6 +126,15 @@ app.post("/vapi/webhook", async (c) => {
 log.info(`Axxiom voice agents starting on :${env.port}`);
 logConfigSummary((m) => log.info(m));
 
+// Loud boot guard: an unconfigured webhook secret now fails closed at request
+// time, so surface it clearly at startup rather than silently accepting calls.
+if (!env.vapiServerSecret && !env.allowInsecureWebhook) {
+  log.error(
+    "SECURITY: VAPI_SERVER_SECRET is not set — /vapi/webhook will REFUSE all requests (503). " +
+      "Set VAPI_SERVER_SECRET (and match it on the Vapi assistant), or ALLOW_INSECURE_WEBHOOK=true for local dev only.",
+  );
+}
+
 // Resume the outbound worker if a campaign was left running (e.g. after a deploy).
 if (env.supabaseUrl && env.supabaseServiceRoleKey && env.outboundAssistantId) {
   void (async () => {
@@ -117,6 +151,36 @@ if (env.supabaseUrl && env.supabaseServiceRoleKey && env.outboundAssistantId) {
     }
   })();
 }
+
+// Process-level safety nets. Without these an unhandled rejection could crash
+// the process silently; a deploy (SIGTERM) would kill the worker mid-tick.
+process.on("unhandledRejection", (reason) => {
+  log.error("Unhandled promise rejection", { reason: String(reason) });
+});
+process.on("uncaughtException", (err) => {
+  // Log then exit so Railway (ON_FAILURE) restarts a clean process rather than
+  // limping along in an unknown state.
+  log.error("Uncaught exception — exiting for restart", { err: String(err) });
+  process.exit(1);
+});
+
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info(`Received ${signal} — shutting down gracefully`);
+  try {
+    // Stop the dialer worker so the interval doesn't fire during teardown.
+    const { stopCampaignWorker } = await import("./outbound/dialer.ts");
+    stopCampaignWorker();
+  } catch (err) {
+    log.warn("Error stopping worker on shutdown", { err: String(err) });
+  }
+  // Give in-flight webhook handlers a moment to finish, then exit.
+  setTimeout(() => process.exit(0), 1500);
+}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 
 export default {
   port: env.port,

@@ -42,17 +42,24 @@ function getClient(): SupabaseClient {
   return client;
 }
 
-/** Upsert a call record (idempotent on call_id). Never throws into the webhook. */
+/**
+ * Upsert a call record (idempotent on call_id). Never throws into the webhook.
+ * Retries transient failures so a single blip doesn't silently drop the inbound
+ * call log (the webhook returns 200, so Vapi won't redeliver on its own).
+ */
 export async function insertVoiceCall(record: VoiceCallRecord): Promise<void> {
-  try {
-    const row = { campaign_type: "inbound", ...record };
-    const { error } = await getClient().from(env.voiceCallTable).upsert(row, { onConflict: "call_id" });
-    if (error) {
-      log.error("Supabase insert failed", { callId: record.call_id, error: error.message });
-    } else {
-      log.info("Logged call to Supabase", { callId: record.call_id });
+  const row = { campaign_type: "inbound", ...record };
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    try {
+      const { error } = await getClient().from(env.voiceCallTable).upsert(row, { onConflict: "call_id" });
+      if (!error) {
+        log.info("Logged call to Supabase", { callId: record.call_id, ...(attempt ? { attempt } : {}) });
+        return;
+      }
+      log.warn("Supabase insert failed", { callId: record.call_id, attempt: attempt + 1, error: error.message });
+    } catch (err) {
+      log.warn("Supabase insert threw", { callId: record.call_id, attempt: attempt + 1, err: String(err) });
     }
-  } catch (err) {
-    log.error("Supabase insert threw", { callId: record.call_id, err: String(err) });
   }
+  log.error("Supabase insert exhausted retries — inbound call log lost", { callId: record.call_id });
 }

@@ -9,6 +9,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { assertSupabase, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
+import { maskPhone } from "../lib/redact.ts";
 
 let client: SupabaseClient | undefined;
 
@@ -203,7 +204,7 @@ export async function checkSuppression(phone: string): Promise<SuppressionCheck>
   if (!phone) return { suppressed: true, reason: "empty" };
   const { data, error } = await db().from("dnc_suppression").select("phone").eq("phone", phone).maybeSingle();
   if (error) {
-    log.warn("DNC lookup failed — suppressing to be safe", { phone, error: error.message });
+    log.warn("DNC lookup failed — suppressing to be safe", { phone: maskPhone(phone), error: error.message });
     return { suppressed: true, reason: "lookup_error", error: error.message };
   }
   return data ? { suppressed: true, reason: "listed" } : { suppressed: false, reason: "clear" };
@@ -212,6 +213,115 @@ export async function checkSuppression(phone: string): Promise<SuppressionCheck>
 /** True if a number is on the suppression list. Fails closed (suppress) on error. */
 export async function isSuppressed(phone: string): Promise<boolean> {
   return (await checkSuppression(phone)).suppressed;
+}
+
+/**
+ * Re-apply dead-lettered writes (outbound.failed_op) that previously exhausted
+ * their in-process retries, marking each resolved on success. Surfaced via
+ * POST /outbound/failed-ops/replay so an operator can recover lost lead/call/
+ * event writes instead of them only being counted on the analytics card.
+ */
+export async function replayFailedOps(limit = 200): Promise<{ attempted: number; resolved: number }> {
+  const { data, error } = await db()
+    .from("failed_op")
+    .select("*")
+    .eq("resolved", false)
+    .order("created_at", { ascending: true })
+    .limit(limit);
+  if (error) {
+    log.warn("failed_op replay: could not read queue", { err: error.message });
+    return { attempted: 0, resolved: 0 };
+  }
+
+  let resolved = 0;
+  for (const op of data ?? []) {
+    const row = op as { id: number; kind: string; ref_id: string | null; payload: Record<string, unknown> | null };
+    const payload = { ...(row.payload ?? {}) } as Record<string, unknown>;
+    let ok = false;
+    try {
+      if (row.kind === "lead.update" && row.ref_id) {
+        // suppressNumber dead-letters a by-dial_phone update tagged with `by`.
+        if (payload.by === "dial_phone") {
+          delete payload.by;
+          const { error: e } = await db().from("lead").update(payload).eq("dial_phone", row.ref_id);
+          ok = !e;
+        } else {
+          const { error: e } = await db().from("lead").update(payload).eq("id", row.ref_id);
+          ok = !e;
+        }
+      } else if (row.kind === "call.update" && row.ref_id) {
+        const { error: e } = await db().from("call").update(payload).eq("id", row.ref_id);
+        ok = !e;
+      } else if (row.kind === "call_event") {
+        const { error: e } = await db().from("call_event").insert(payload);
+        ok = !e;
+      } else if (row.kind === "dnc_suppression") {
+        const { error: e } = await db().from("dnc_suppression").upsert(payload, { onConflict: "phone" });
+        ok = !e;
+      } else {
+        log.warn("failed_op replay: unknown kind, skipping", { kind: row.kind, id: row.id });
+        continue;
+      }
+    } catch (err) {
+      log.warn("failed_op replay: write threw", { id: row.id, err: String(err) });
+      ok = false;
+    }
+    if (ok) {
+      await db().from("failed_op").update({ resolved: true }).eq("id", row.id);
+      resolved++;
+    }
+  }
+  log.info("failed_op replay complete", { attempted: data?.length ?? 0, resolved });
+  return { attempted: data?.length ?? 0, resolved };
+}
+
+/**
+ * Data retention: null out sensitive call content (transcript / recording_url /
+ * summary / raw) and call_event text/payload older than `retainDays`. Structural
+ * rows + aggregate metrics stay for reporting; only the PII-bearing content is
+ * purged. Idempotent — run it on a schedule (or via the retention endpoint).
+ */
+export async function purgeOldPii(retainDays = env.piiRetainDays): Promise<{ calls: number; events: number }> {
+  const cutoff = new Date(Date.now() - retainDays * 86_400_000).toISOString();
+  const { data: calls, error: callErr } = await db()
+    .from("call")
+    .update({ transcript: null, recording_url: null, summary: null, raw: null })
+    .lt("created_at", cutoff)
+    .not("transcript", "is", null)
+    .select("id");
+  if (callErr) log.warn("PII purge (calls) failed", { err: callErr.message });
+  const { data: events, error: evErr } = await db()
+    .from("call_event")
+    .update({ text: null, payload: null })
+    .lt("at", cutoff)
+    .not("payload", "is", null)
+    .select("id");
+  if (evErr) log.warn("PII purge (events) failed", { err: evErr.message });
+  const result = { calls: calls?.length ?? 0, events: events?.length ?? 0 };
+  log.info("PII purge complete", { retainDays, ...result });
+  return result;
+}
+
+/**
+ * DSAR / right-to-erasure: delete every lead row for a phone number (their calls
+ * + call_events cascade), plus any remaining calls placed to that number, and
+ * keep the number on the DNC suppression list (the minimal data we must retain
+ * so it's never re-imported or re-dialed). Returns how much was removed.
+ */
+export async function deleteLeadDataByPhone(phone: string): Promise<{ deletedLeads: number; deletedCalls: number }> {
+  const e164 = phone.trim();
+  // Suppress first so a concurrent import/dial can't re-add it mid-erasure.
+  await suppressNumber(e164, "erasure request (DSAR)", "manual");
+  const { data: leads } = await db()
+    .from("lead")
+    .delete()
+    .or(`dial_phone.eq.${e164},contact_phone.eq.${e164},owner_phone.eq.${e164}`)
+    .select("id");
+  // Catch calls not tied to a (now-deleted) lead — e.g. ad-hoc test calls.
+  const { data: calls } = await db().from("call").delete().eq("phone_number", e164).select("id");
+  const result = { deletedLeads: leads?.length ?? 0, deletedCalls: calls?.length ?? 0 };
+  log.info("DSAR erasure complete", { ...result });
+  return result;
 }
 
 /** Add a number to the suppression list and mark its lead as DNC. */
