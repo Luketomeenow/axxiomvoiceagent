@@ -471,3 +471,87 @@ revoke select on outbound.v_campaign_funnel, outbound.v_daily_metrics,
                outbound.v_call_quality, outbound.v_attempt_distribution,
                outbound.v_compliance_audit
   from anon;
+
+-- ===========================================================================
+-- CALL-QUALITY + CONTINUOUS-IMPROVEMENT MIGRATION (additive, safe to re-run)
+--   * call.ended_by      — who ended the call (customer | agent | operator | system)
+--   * campaign_insight   — per-campaign AI analysis: a human-readable improvement
+--                          report + a paste-ready improved system prompt, with a
+--                          suggest→approve→apply workflow and a compliance guardrail
+-- ===========================================================================
+
+alter table outbound.call add column if not exists ended_by text;  -- customer | agent | operator | system
+
+create table if not exists outbound.campaign_insight (
+  id               uuid primary key default gen_random_uuid(),
+  campaign_id      uuid references outbound.campaign (id) on delete cascade,
+  brand            text,
+  created_at       timestamptz not null default now(),
+  calls_analyzed   int not null default 0,
+  window_from      timestamptz,
+  window_to        timestamptz,
+  report           text,          -- detailed, human-readable improvement suggestions
+  suggested_prompt text,          -- ready-to-paste improved system prompt (self-learning proposal)
+  guardrail_passed boolean,       -- did the suggested prompt keep the required disclosures?
+  guardrail_notes  text,
+  status           text not null default 'proposed',  -- proposed | approved | applied | rejected
+  approved_by      text,
+  approved_at      timestamptz,
+  applied_at       timestamptz,
+  model            text,
+  raw              jsonb
+);
+create index if not exists outbound_campaign_insight_idx on outbound.campaign_insight (campaign_id, created_at desc);
+
+-- Same auth posture as the rest: authenticated reads only; service role (backend) writes.
+alter table outbound.campaign_insight enable row level security;
+do $$
+begin
+  create policy "campaign_insight authenticated read" on outbound.campaign_insight for select to authenticated using (true);
+exception when duplicate_object then null; end $$;
+grant select on outbound.campaign_insight to authenticated, service_role;
+grant all privileges on outbound.campaign_insight to service_role;
+
+-- ===========================================================================
+-- TELEPHONY + COST MIGRATION (additive, safe to re-run)
+-- Twilio is now the carrier. Vapi reports its own platform cost (LLM/STT/TTS);
+-- the authoritative telephony cost + carrier status + answered-by come from the
+-- Twilio API (reconciled by src/outbound/twilioSync.ts via provider_call_id).
+-- ===========================================================================
+alter table outbound.call add column if not exists vapi_cost        numeric;  -- Vapi platform cost
+alter table outbound.call add column if not exists telephony_cost   numeric;  -- Twilio per-call price (USD)
+alter table outbound.call add column if not exists provider_call_id text;      -- Twilio Call SID (Vapi phoneCallProviderId)
+alter table outbound.call add column if not exists provider_status  text;      -- Twilio status: completed|busy|no-answer|failed|canceled
+alter table outbound.call add column if not exists answered_by      text;      -- Twilio AMD: human | machine_* | unknown
+create index if not exists outbound_call_provider_idx on outbound.call (provider_call_id);
+
+-- Recreate v_call_quality with connect/who-ended breakdown + cost. Placed AFTER
+-- the columns above exist, so it supersedes the base definition earlier in this
+-- file (create-or-replace wins on the full top-to-bottom run).
+create or replace view outbound.v_call_quality with (security_invoker = on) as
+select
+  campaign_id,
+  brand,
+  count(*)                                                                     as calls,
+  count(*) filter (where status = 'ended')                                    as completed,
+  -- connected = a real conversation happened (a person/agent ended it, or transfer)
+  count(*) filter (where ended_by in ('customer', 'agent') or transferred_to_human) as connected,
+  round(avg(duration_seconds) filter (where duration_seconds is not null), 1) as avg_duration_seconds,
+  round(avg(duration_seconds) filter (where ended_by in ('customer', 'agent') or transferred_to_human), 1) as avg_talk_seconds,
+  round(avg(sentiment_score) filter (where sentiment_score is not null), 3)   as avg_sentiment,
+  count(*) filter (where transferred_to_human)                                as transferred,
+  count(*) filter (where outcome = 'voicemail')                               as voicemail,
+  count(*) filter (where outcome = 'no_answer')                               as no_answer,
+  count(*) filter (where outcome = 'failed')                                  as failed,
+  count(*) filter (where ended_reason = 'stale-timeout')                      as stale,
+  count(*) filter (where ended_by = 'customer')                               as ended_customer,
+  count(*) filter (where ended_by = 'agent')                                  as ended_agent,
+  count(*) filter (where ended_by = 'operator')                               as ended_operator,
+  count(*) filter (where ended_by = 'system')                                 as ended_system,
+  round(sum(coalesce(vapi_cost, 0))::numeric, 4)                              as vapi_cost,
+  round(sum(coalesce(telephony_cost, 0))::numeric, 4)                         as telephony_cost,
+  round(sum(coalesce(vapi_cost, 0) + coalesce(telephony_cost, 0))::numeric, 4) as total_cost
+from outbound.call
+group by campaign_id, brand;
+
+grant select on outbound.v_call_quality to authenticated, service_role;

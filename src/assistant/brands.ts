@@ -47,7 +47,7 @@ export interface Brand {
 export const BRANDS: Brand[] = [
   {
     slug: "quality",
-    vapiPhoneNumberId: "a873e36d-7cdd-4715-bdf8-8ac2d75a447d",
+    vapiPhoneNumberId: "b3c54e38-e197-4692-957c-7544a303b7ec", // Twilio +1 240 (MD)
     voiceProvider: "vapi",
     voiceId: "Clara", // Vapi native — warm, professional (Mid-Atlantic polish)
     displayName: "Quality Elevator",
@@ -71,7 +71,7 @@ export const BRANDS: Brand[] = [
   },
   {
     slug: "motion",
-    vapiPhoneNumberId: "3bd5c212-3ce9-45db-9bab-f2c070756062",
+    vapiPhoneNumberId: "703b0012-6f94-4677-8ad9-08e9c6cda93f", // Twilio +1 954 (Fort Lauderdale, FL)
     voiceProvider: "vapi",
     voiceId: "Layla", // Vapi native — warm, bright, cheerful (South FL)
     displayName: "Motion Elevator",
@@ -95,7 +95,7 @@ export const BRANDS: Brand[] = [
   },
   {
     slug: "liftech",
-    vapiPhoneNumberId: "42a14aec-ef5b-4e08-a516-686af3a40679",
+    vapiPhoneNumberId: "24394fa5-87db-479f-ae0d-78f0b6ea9eda", // Twilio +1 562 (SoCal)
     voiceProvider: "vapi",
     voiceId: "Sid", // Vapi native — laid-back, smooth, deep (SoCal)
     displayName: "Liftech Elevator Services",
@@ -166,7 +166,7 @@ export const BRANDS: Brand[] = [
   },
   {
     slug: "ameritex",
-    vapiPhoneNumberId: "66c38638-c1d3-412e-a093-69d7219590b0",
+    vapiPhoneNumberId: "24509cad-f0de-41f4-8ece-ad188b77090d", // Twilio +1 510 (SF Bay Area)
     voiceProvider: "vapi",
     voiceId: "Savannah", // Vapi native — straightforward, Southern accent (Texas)
     displayName: "AmeriTex Elevator Services",

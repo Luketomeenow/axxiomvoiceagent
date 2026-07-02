@@ -13,7 +13,13 @@
 import { assertVapi, env } from "../src/config/env.ts";
 import { BRANDS, getBrand } from "../src/assistant/brands.ts";
 import { buildOutboundAssistantConfig } from "../src/assistant/outbound/config.ts";
-import { appSettingReady, getBrandAssistantId, getBrandVoiceId, setBrandAssistantId } from "../src/outbound/brandStore.ts";
+import {
+  appSettingReady,
+  getBrandAssistantId,
+  getBrandPromptOverride,
+  getBrandVoiceId,
+  setBrandAssistantId,
+} from "../src/outbound/brandStore.ts";
 import { redactSecretsDeep } from "../src/lib/redact.ts";
 
 const VAPI_API = "https://api.vapi.ai";
@@ -55,7 +61,11 @@ async function main() {
   for (const brand of brands) {
     if (!brand) continue;
     const voiceId = (await getBrandVoiceId(brand.slug)) ?? brand.voiceId;
-    const config = buildOutboundAssistantConfig({ brand, voiceId });
+    // Honor an approved self-learning prompt override so a redeploy doesn't
+    // clobber an improvement that was reviewed + applied.
+    const promptOverride = await getBrandPromptOverride(brand.slug);
+    const config = buildOutboundAssistantConfig({ brand, voiceId, promptOverride });
+    if (promptOverride) console.log(`   (using approved prompt override for ${brand.slug})`);
     const existing = await getBrandAssistantId(brand.slug);
 
     try {

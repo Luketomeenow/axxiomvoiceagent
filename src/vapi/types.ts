@@ -10,6 +10,10 @@ export interface VapiCall {
   customer?: { number?: string };
   phoneNumber?: { number?: string };
   metadata?: Record<string, unknown>;
+  // For BYO Twilio: the underlying carrier + its Call SID, so we can reconcile
+  // the authoritative telephony cost/status from Twilio.
+  phoneCallProvider?: string; // "twilio"
+  phoneCallProviderId?: string; // Twilio Call SID
 }
 
 export interface VapiToolCall {
@@ -41,6 +45,7 @@ export interface VapiMessage {
   // end-of-call-report
   endedReason?: string;
   durationSeconds?: number;
+  cost?: number; // Vapi platform cost (LLM + STT + TTS); excludes BYO-Twilio telephony
   summary?: string;
   transcript?: string;
   recordingUrl?: string;

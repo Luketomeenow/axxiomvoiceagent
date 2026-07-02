@@ -28,6 +28,13 @@ export const setBrandAssistantId = (slug: string, id: string): Promise<boolean> 
 export const getBrandVoiceId = (slug: string): Promise<string | undefined> => read(`brand_voice:${slug}`).catch(() => undefined);
 export const setBrandVoiceId = (slug: string, id: string): Promise<boolean> => write(`brand_voice:${slug}`, id);
 
+// Approved self-learning prompt override for a brand (set when an operator approves
+// a campaign_insight). When present, it replaces the code-default system prompt for
+// that brand's assistant — so the create-assistant scripts + apply step use it and a
+// redeploy doesn't clobber an approved improvement.
+export const getBrandPromptOverride = (slug: string): Promise<string | undefined> => read(`brand_prompt:${slug}`).catch(() => undefined);
+export const setBrandPromptOverride = (slug: string, prompt: string): Promise<boolean> => write(`brand_prompt:${slug}`, prompt);
+
 /** True if outbound.app_setting is reachable (migration applied + schema exposed). */
 export async function appSettingReady(): Promise<boolean> {
   try {

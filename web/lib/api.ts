@@ -104,12 +104,22 @@ export interface QualityRow {
   brand: string | null;
   calls: number;
   completed: number;
+  connected: number;
   avg_duration_seconds: number | null;
+  avg_talk_seconds: number | null;
   avg_sentiment: number | null;
   transferred: number;
   voicemail: number;
   no_answer: number;
   failed: number;
+  stale: number;
+  ended_customer: number;
+  ended_agent: number;
+  ended_operator: number;
+  ended_system: number;
+  vapi_cost: number | null;
+  telephony_cost: number | null;
+  total_cost: number | null;
 }
 
 export interface DailyRow {
@@ -187,6 +197,19 @@ export const api = {
     const json = (await get(`/outbound/brand-list`)) as { brands?: BrandInfoOption[] };
     return json.brands ?? [];
   },
+  // Continuous improvement (per-campaign transcript analysis + self-learning).
+  analyzeCampaign: (campaignId: string) => post(`/outbound/campaign/${campaignId}/analyze`),
+  campaignInsights: async (campaignId: string): Promise<import("./types").CampaignInsight[]> => {
+    const json = (await get(`/outbound/campaign/${campaignId}/insights`)) as {
+      insights?: import("./types").CampaignInsight[];
+    };
+    return json.insights ?? [];
+  },
+  approveInsight: (id: string, approvedBy?: string) => post(`/outbound/insights/${id}/approve`, { approvedBy }),
+  rejectInsight: (id: string) => post(`/outbound/insights/${id}/reject`),
+  // Reconcile authoritative telephony cost/status from Twilio onto call rows.
+  syncTwilio: (campaignId?: string | null) =>
+    post(`/outbound/twilio/sync${campaignId ? `?campaignId=${campaignId}` : ""}`),
   callNow: (leadId: string) => post(`/outbound/call-now/${leadId}`),
   endCall: (callId: string) => post(`/outbound/calls/${callId}/end`),
   testCall: (body: TestCallBody) => post("/outbound/test-call", body),

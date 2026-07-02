@@ -48,6 +48,20 @@ function leadIdOf(message: VapiMessage): string | undefined {
   return typeof meta.leadId === "string" ? meta.leadId : undefined;
 }
 
+/**
+ * Who ended the call, derived from Vapi's endedReason (+ our operator marker):
+ *   customer = they hung up · agent = the AI ended/transferred · operator = ended
+ *   from the dashboard · system = never connected or system-terminated (no answer,
+ *   busy, voicemail, silence, max-duration, errors, stale sweep).
+ */
+export function endedByFromReason(reason: string | null | undefined): "customer" | "agent" | "operator" | "system" {
+  const r = (reason ?? "").toLowerCase();
+  if (r.includes("operator")) return "operator";
+  if (r.includes("assistant") || r.includes("forward")) return "agent";
+  if (r.includes("customer") && (r.includes("ended") || r.includes("hung"))) return "customer";
+  return "system";
+}
+
 // --- Anti-loop guard -------------------------------------------------------
 // The model sometimes re-fires the same tool over and over (seen as a qualifyLead
 // loop with "one sec" fillers). We dedupe identical repeat calls and cap how many
@@ -442,6 +456,7 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
     const update: Record<string, unknown> = {
       status: "ended",
       ended_reason: message.endedReason ?? null,
+      ended_by: endedByFromReason(message.endedReason),
       duration_seconds: message.durationSeconds ?? null,
       transcript: transcript || null,
       summary,
@@ -454,6 +469,10 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
         ? (structured as Record<string, number>).sentimentScore
         : null,
       ended_at: new Date().toISOString(),
+      // Cost + carrier linkage. vapi_cost is Vapi's platform cost; the Twilio
+      // telephony cost is reconciled later by twilioSync via provider_call_id.
+      vapi_cost: typeof message.cost === "number" ? message.cost : null,
+      provider_call_id: message.call?.phoneCallProviderId ?? null,
       raw: message,
     };
     // Backfill the AB 2905 / CIPA disclosure timestamp. The opener is

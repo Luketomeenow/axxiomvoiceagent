@@ -431,6 +431,7 @@ export async function endCall(callRowId: string): Promise<DialResult> {
   await updateCall(callRowId, {
     status: "ended",
     ended_reason: "ended-by-operator",
+    ended_by: "operator",
     ended_at: new Date().toISOString(),
   });
 
@@ -524,7 +525,7 @@ async function sweepStaleCalls(): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_CALL_MS).toISOString();
   const { data, error } = await db()
     .from("call")
-    .update({ status: "ended", ended_reason: "stale-timeout", ended_at: new Date().toISOString() })
+    .update({ status: "ended", ended_reason: "stale-timeout", ended_by: "system", ended_at: new Date().toISOString() })
     .in("status", ["queued", "ringing", "in-progress"])
     .lt("created_at", cutoff)
     .select("id, lead_id");
@@ -603,12 +604,15 @@ export async function runCampaignTick(): Promise<void> {
     }
 
     for (const campaign of campaigns) {
+      const campaignId = (campaign as { id?: string }).id;
       try {
         await tickCampaign(campaign as Record<string, unknown>);
+        if (campaignId) await maybeAutoAnalyze(campaignId);
       } catch (err) {
-        log.error("Campaign tick failed", { campaignId: (campaign as { id?: string }).id, err: String(err) });
+        log.error("Campaign tick failed", { campaignId, err: String(err) });
       }
     }
+    await maybeSyncTwilio();
   } finally {
     ticking = false;
   }
@@ -690,6 +694,49 @@ async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
       return;
     }
   }
+}
+
+// --- Auto transcript analysis (continuous improvement) ---------------------
+// After every INSIGHT_EVERY_N_CALLS ended calls, analyze the batch once. Tracked
+// by comparing ended-call count to existing insight count, with an in-memory
+// cooldown so a persistent failure can't re-hit Claude every tick (single
+// instance, like the rest of the worker state).
+const AUTO_ANALYZE_COOLDOWN_MS = 30 * 60_000;
+const lastAutoAnalyze = new Map<string, number>();
+
+async function maybeAutoAnalyze(campaignId: string): Promise<void> {
+  if (!env.anthropicApiKey) return;
+  const n = env.insightEveryNCalls;
+  const [{ count: ended }, { count: insights }] = await Promise.all([
+    db().from("call").select("id", { count: "exact", head: true }).eq("campaign_id", campaignId).eq("status", "ended"),
+    db().from("campaign_insight").select("id", { count: "exact", head: true }).eq("campaign_id", campaignId),
+  ]);
+  const endedCount = ended ?? 0;
+  const insightCount = insights ?? 0;
+  // Not enough new ended calls since the last insight to warrant another pass.
+  if (endedCount < (insightCount + 1) * n) return;
+
+  const now = Date.now();
+  if (now - (lastAutoAnalyze.get(campaignId) ?? 0) < AUTO_ANALYZE_COOLDOWN_MS) return;
+  lastAutoAnalyze.set(campaignId, now);
+
+  log.info("Auto-analyzing campaign transcripts", { campaignId, endedCount, insightCount, n });
+  const { analyzeCampaign } = await import("../ai/campaignInsights.ts");
+  await analyzeCampaign(campaignId).catch((err) => log.warn("Auto-analyze failed", { campaignId, err: String(err) }));
+}
+
+// Periodically reconcile Twilio telephony cost/status onto recent calls. Twilio
+// finalizes price shortly after a call ends, so a few-minute cadence is plenty.
+const TWILIO_SYNC_INTERVAL_MS = 5 * 60_000;
+let lastTwilioSync = 0;
+
+async function maybeSyncTwilio(): Promise<void> {
+  if (!env.twilioAccountSid || !env.twilioAuthToken) return;
+  const now = Date.now();
+  if (now - lastTwilioSync < TWILIO_SYNC_INTERVAL_MS) return;
+  lastTwilioSync = now;
+  const { syncTwilioCosts } = await import("./twilioSync.ts");
+  await syncTwilioCosts({ limit: 200 }).catch((err) => log.warn("Twilio auto-sync failed", { err: String(err) }));
 }
 
 /** True if a dial failure is account/telephony-level (will fail every call), not

@@ -12,6 +12,7 @@ import { LeadsTable } from "@/components/LeadsTable";
 import { ExportButtons } from "@/components/ExportButtons";
 import { TestAgentCard } from "@/components/TestAgentCard";
 import { VoicePicker } from "@/components/VoicePicker";
+import { InsightsPanel } from "@/components/InsightsPanel";
 import { AgentSwitcher } from "@/components/AgentSwitcher";
 import { LiveStatus } from "@/components/LiveStatus";
 
@@ -66,6 +67,8 @@ export default function Page() {
 
         <LiveMonitor />
         <RecentCalls />
+
+        <InsightsPanel campaignId={campaignId} />
 
         <ExportButtons campaignId={campaignId} />
         <LeadsTable onAction={refresh} campaignId={campaignId} refreshKey={refreshKey} />

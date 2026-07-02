@@ -51,6 +51,22 @@ export function RecentCalls() {
     return `${m}:${sec.toString().padStart(2, "0")}`;
   };
 
+  // Who ended the call → a short badge (label + tint).
+  const endedBy = (v: string | null): { label: string; cls: string } | null => {
+    switch (v) {
+      case "customer":
+        return { label: "they ended", cls: "border-amber-500/30 bg-amber-500/15 text-amber-300" };
+      case "agent":
+        return { label: "agent ended", cls: "border-sky-500/30 bg-sky-500/15 text-sky-300" };
+      case "operator":
+        return { label: "we ended", cls: "border-emerald-500/30 bg-emerald-500/15 text-emerald-300" };
+      case "system":
+        return { label: "system", cls: "border-white/10 bg-white/5 text-slate-400" };
+      default:
+        return null;
+    }
+  };
+
   const pageCount = Math.max(1, Math.ceil(calls.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
   const visible = calls.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
@@ -91,6 +107,14 @@ export function RecentCalls() {
                       )}
                       {call.disposition && (
                         <span className="rounded-full bg-white/10 px-2 py-0.5 text-slate-200">{call.disposition}</span>
+                      )}
+                      {endedBy(call.ended_by) && (
+                        <span
+                          className={`rounded-full border px-2 py-0.5 ${endedBy(call.ended_by)!.cls}`}
+                          title={call.ended_reason ?? undefined}
+                        >
+                          {endedBy(call.ended_by)!.label}
+                        </span>
                       )}
                       <span className="text-slate-400">{fmtDuration(call.duration_seconds)}</span>
                       {call.ended_at && (

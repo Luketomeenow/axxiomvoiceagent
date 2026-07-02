@@ -38,27 +38,53 @@ function sumFunnel(rows: FunnelRow[]): Omit<FunnelRow, "campaign_id" | "name" | 
 
 /** Aggregate call-quality rows into headline numbers. */
 function sumQuality(rows: QualityRow[]) {
-  const calls = rows.reduce((s, r) => s + r.calls, 0);
-  const transferred = rows.reduce((s, r) => s + r.transferred, 0);
-  const voicemail = rows.reduce((s, r) => s + r.voicemail, 0);
-  const noAnswer = rows.reduce((s, r) => s + r.no_answer, 0);
-  const failed = rows.reduce((s, r) => s + r.failed, 0);
-  // Duration-weighted average across rows that report one.
-  const durRows = rows.filter((r) => r.avg_duration_seconds != null);
-  const avgDuration = durRows.length
-    ? durRows.reduce((s, r) => s + (r.avg_duration_seconds || 0) * r.calls, 0) /
-      Math.max(1, durRows.reduce((s, r) => s + r.calls, 0))
-    : null;
-  const sentRows = rows.filter((r) => r.avg_sentiment != null);
-  const avgSentiment = sentRows.length
-    ? sentRows.reduce((s, r) => s + (r.avg_sentiment || 0) * r.calls, 0) /
-      Math.max(1, sentRows.reduce((s, r) => s + r.calls, 0))
-    : null;
-  return { calls, transferred, voicemail, noAnswer, failed, avgDuration, avgSentiment };
+  const sum = (f: (r: QualityRow) => number) => rows.reduce((s, r) => s + (f(r) || 0), 0);
+  const calls = sum((r) => r.calls);
+  const connected = sum((r) => r.connected);
+  const transferred = sum((r) => r.transferred);
+  const voicemail = sum((r) => r.voicemail);
+  const noAnswer = sum((r) => r.no_answer);
+  const failed = sum((r) => r.failed);
+  const stale = sum((r) => r.stale);
+  const endedCustomer = sum((r) => r.ended_customer);
+  const endedAgent = sum((r) => r.ended_agent);
+  const endedOperator = sum((r) => r.ended_operator);
+  const endedSystem = sum((r) => r.ended_system);
+  const vapiCost = sum((r) => Number(r.vapi_cost) || 0);
+  const telephonyCost = sum((r) => Number(r.telephony_cost) || 0);
+  const totalCost = sum((r) => Number(r.total_cost) || 0);
+  // Duration-weighted averages across rows that report one.
+  const wAvg = (pick: (r: QualityRow) => number | null) => {
+    const rs = rows.filter((r) => pick(r) != null);
+    return rs.length
+      ? rs.reduce((s, r) => s + (pick(r) || 0) * r.calls, 0) / Math.max(1, rs.reduce((s, r) => s + r.calls, 0))
+      : null;
+  };
+  return {
+    calls,
+    connected,
+    transferred,
+    voicemail,
+    noAnswer,
+    failed,
+    stale,
+    endedCustomer,
+    endedAgent,
+    endedOperator,
+    endedSystem,
+    vapiCost,
+    telephonyCost,
+    totalCost,
+    avgDuration: wAvg((r) => r.avg_duration_seconds),
+    avgTalk: wAvg((r) => r.avg_talk_seconds),
+    avgSentiment: wAvg((r) => r.avg_sentiment),
+  };
 }
 
 const pct = (n: number, d: number) => (d ? Math.round((n / d) * 100) : 0);
 const fmtDur = (s: number | null) => (s == null ? "—" : `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`);
+const fmtMoney = (n: number) => `$${(n || 0).toFixed(n >= 100 ? 0 : 2)}`;
+const fmtMoney4 = (n: number) => `$${(n || 0).toFixed(4)}`;
 
 export default function AnalyticsPage() {
   const [campaigns, setCampaigns] = useState<CampaignOpt[]>([]);
@@ -67,6 +93,7 @@ export default function AnalyticsPage() {
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [compliance, setCompliance] = useState<ComplianceResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -94,6 +121,33 @@ export default function AnalyticsPage() {
   const quality = data ? sumQuality(data.quality) : null;
   const contactRate = funnel ? pct(funnel.contacted, funnel.total_leads) : 0;
   const qualRate = funnel ? pct(funnel.qualified, funnel.contacted) : 0;
+  const connectRate = quality ? pct(quality.connected, quality.calls) : 0;
+  const costPerCall = quality && quality.calls > 0 ? quality.totalCost / quality.calls : null;
+  const costPerQualified = quality && funnel && funnel.qualified > 0 ? quality.totalCost / funnel.qualified : null;
+
+  async function syncTwilio() {
+    setSyncing(true);
+    try {
+      await api.syncTwilio(campaignId);
+      await load();
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  // Per-brand rollup (brand ≈ one Twilio caller-ID today): volume, connect rate, cost.
+  const byBrand = (() => {
+    const m = new Map<string, { calls: number; connected: number; cost: number }>();
+    for (const r of data?.quality ?? []) {
+      const key = r.brand || "—";
+      const e = m.get(key) ?? { calls: 0, connected: 0, cost: 0 };
+      e.calls += r.calls;
+      e.connected += r.connected;
+      e.cost += Number(r.total_cost) || 0;
+      m.set(key, e);
+    }
+    return [...m.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.calls - a.calls);
+  })();
 
   return (
     <div className="min-h-screen">
@@ -127,6 +181,9 @@ export default function AnalyticsPage() {
               <option value={30}>30 days</option>
               <option value={90}>90 days</option>
             </select>
+            <button onClick={syncTwilio} disabled={syncing} className="btn btn-ghost btn-xs disabled:opacity-40" title="Pull Twilio call cost + carrier status onto recent calls">
+              {syncing ? "Syncing…" : "↻ Twilio costs"}
+            </button>
             <Link href="/" className="btn btn-ghost btn-xs">
               ← Console
             </Link>
@@ -149,6 +206,28 @@ export default function AnalyticsPage() {
           <Kpi label="Qualified" value={funnel?.qualified ?? 0} hint={`${qualRate}% of contacted`} accent="emerald" />
           <Kpi label="Total dials" value={funnel?.total_attempts ?? 0} hint="across all attempts" />
         </div>
+
+        {/* Cost & reach — Vapi platform cost + Twilio telephony cost */}
+        <section className="card card-pad">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="section-title">Cost &amp; reach</h2>
+            <span className="text-xs text-slate-500">Vapi (AI) + Twilio (telephony)</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+            <Mini label="Total cost" value={fmtMoney(quality?.totalCost ?? 0)} />
+            <Mini label="Cost / call" value={costPerCall == null ? "—" : fmtMoney4(costPerCall)} />
+            <Mini label="Cost / qualified" value={costPerQualified == null ? "—" : fmtMoney(costPerQualified)} />
+            <Mini label="Connect rate" value={`${connectRate}%`} />
+            <Mini label="AI cost (Vapi)" value={fmtMoney(quality?.vapiCost ?? 0)} />
+            <Mini label="Telephony (Twilio)" value={fmtMoney(quality?.telephonyCost ?? 0)} />
+          </div>
+          {quality && quality.calls > 0 && quality.telephonyCost === 0 && (
+            <p className="mt-3 text-xs text-amber-300">
+              Telephony cost is $0 — click “↻ Twilio costs” above (and set TWILIO creds on the server) to pull
+              authoritative per-call pricing from Twilio.
+            </p>
+          )}
+        </section>
 
         <div className="grid gap-5 lg:grid-cols-2">
           {/* Funnel */}
@@ -189,17 +268,30 @@ export default function AnalyticsPage() {
             <h2 className="section-title mb-3">Call quality</h2>
             <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
               <Mini label="Calls placed" value={(quality?.calls ?? 0).toLocaleString()} />
-              <Mini label="Avg duration" value={fmtDur(quality?.avgDuration ?? null)} />
+              <Mini label="Connect rate" value={`${connectRate}%`} />
+              <Mini label="Avg talk (connected)" value={fmtDur(quality?.avgTalk ?? null)} />
               <Mini
                 label="Avg sentiment"
                 value={quality?.avgSentiment == null ? "—" : quality.avgSentiment.toFixed(2)}
               />
               <Mini label="Transfer rate" value={`${pct(quality?.transferred ?? 0, quality?.calls ?? 0)}%`} />
-              <Mini label="Voicemail rate" value={`${pct(quality?.voicemail ?? 0, quality?.calls ?? 0)}%`} />
               <Mini label="No-answer rate" value={`${pct(quality?.noAnswer ?? 0, quality?.calls ?? 0)}%`} />
             </div>
-            {quality && quality.failed > 0 && (
-              <p className="mt-3 text-xs text-rose-300">{quality.failed} call(s) failed to place.</p>
+
+            <h3 className="mt-4 mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">Who ended the call</h3>
+            <BarList
+              items={[
+                { label: "They hung up", value: quality?.endedCustomer ?? 0, accent: "amber" },
+                { label: "Agent ended", value: quality?.endedAgent ?? 0, accent: "sky" },
+                { label: "We ended (operator)", value: quality?.endedOperator ?? 0, accent: "emerald" },
+                { label: "System (no-answer/VM/error)", value: quality?.endedSystem ?? 0, accent: "slate" },
+              ]}
+            />
+            {quality && (quality.failed > 0 || quality.stale > 0) && (
+              <p className="mt-3 text-xs text-rose-300">
+                {quality.failed > 0 && `${quality.failed} failed to place. `}
+                {quality.stale > 0 && `${quality.stale} timed out (missed end-of-call webhook).`}
+              </p>
             )}
           </section>
 
@@ -214,6 +306,39 @@ export default function AnalyticsPage() {
             />
           </section>
         </div>
+
+        {/* Caller-ID / brand health — spread load; a dropping connect rate can signal spam-flagging */}
+        {byBrand.length > 0 && (
+          <section className="card card-pad">
+            <h2 className="section-title mb-1">Caller-ID / brand health</h2>
+            <p className="mb-3 text-xs text-slate-500">
+              Volume, connect rate, and cost per brand number. Watch for a brand’s connect rate dropping — a sign its
+              caller ID may be getting spam-flagged (rotate / register STIR/SHAKEN).
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[480px] text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-slate-400">
+                    <th className="py-2 pr-3">Brand</th>
+                    <th className="py-2 pr-3">Calls</th>
+                    <th className="py-2 pr-3">Connect rate</th>
+                    <th className="py-2 pr-3">Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byBrand.map((b) => (
+                    <tr key={b.brand} className="border-b border-white/5">
+                      <td className="py-2 pr-3 text-slate-200">{b.brand}</td>
+                      <td className="py-2 pr-3 tabular-nums text-slate-300">{b.calls.toLocaleString()}</td>
+                      <td className="py-2 pr-3 tabular-nums text-slate-300">{pct(b.connected, b.calls)}%</td>
+                      <td className="py-2 pr-3 tabular-nums text-slate-300">{fmtMoney(b.cost)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
 
         {/* Compliance */}
         <section className="card card-pad">

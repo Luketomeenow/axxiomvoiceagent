@@ -57,9 +57,30 @@ export interface Call {
   transcript: string | null;
   duration_seconds: number | null;
   recording_url: string | null;
+  ended_reason: string | null;
+  ended_by: string | null; // customer | agent | operator | system
   started_at: string | null;
   ended_at: string | null;
   created_at: string;
+}
+
+export interface CampaignInsight {
+  id: string;
+  campaign_id: string | null;
+  brand: string | null;
+  created_at: string;
+  calls_analyzed: number;
+  window_from: string | null;
+  window_to: string | null;
+  report: string | null;
+  suggested_prompt: string | null;
+  guardrail_passed: boolean | null;
+  guardrail_notes: string | null;
+  status: "proposed" | "approved" | "applied" | "rejected";
+  approved_by: string | null;
+  approved_at: string | null;
+  applied_at: string | null;
+  model: string | null;
 }
 
 export interface CallEvent {

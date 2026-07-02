@@ -89,6 +89,9 @@ export const env = {
   anthropicApiKey: str("ANTHROPIC_API_KEY"),
   anthropicModel: str("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
   enableTranscriptAnalysis: bool("ENABLE_TRANSCRIPT_ANALYSIS", false),
+  // Per-campaign transcript analysis runs automatically every N ended calls
+  // (and on demand). Produces an improvement report + a proposed improved prompt.
+  insightEveryNCalls: num("INSIGHT_EVERY_N_CALLS", 25),
 
   // Supabase
   supabaseUrl: str("SUPABASE_URL"),

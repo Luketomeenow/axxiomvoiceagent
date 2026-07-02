@@ -31,22 +31,65 @@
 
 import { readFileSync } from "node:fs";
 
-import { assertTwilio, env } from "../src/config/env.ts";
+import { assertTwilio, assertVapi, env } from "../src/config/env.ts";
 import { getBrand } from "../src/assistant/brands.ts";
 import { toE164 } from "../src/outbound/phone.ts";
 
 const VAPI_API = "https://api.vapi.ai";
 
-async function vapi(path: string, method: string, body?: unknown): Promise<unknown> {
-  const res = await fetch(VAPI_API + path, {
-    method,
-    headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
-  if (!res.ok) throw new Error(`Vapi ${method} ${path} → ${res.status}: ${JSON.stringify(json).slice(0, 600)}`);
-  return json;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Call the Vapi API. Retries transient failures (network errors + 5xx, incl.
+ * non-JSON gateway bodies like "upstream connect error") a few times with
+ * backoff, and always throws a READABLE error (status + snippet) instead of a
+ * cryptic JSON.parse crash when the body isn't JSON.
+ */
+async function vapi(path: string, method: string, body?: unknown, retries = 3): Promise<unknown> {
+  let lastErr = "";
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    let res: Response;
+    let text: string;
+    try {
+      res = await fetch(VAPI_API + path, {
+        method,
+        headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      text = await res.text();
+    } catch (err) {
+      lastErr = `network error: ${String(err)}`;
+      if (attempt < retries) {
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      throw new Error(`Vapi ${method} ${path} → ${lastErr}`);
+    }
+
+    let json: unknown;
+    try {
+      json = text ? JSON.parse(text) : {};
+    } catch {
+      // Non-JSON body — almost always a gateway 5xx (e.g. "upstream connect error").
+      lastErr = `${res.status} (non-JSON): ${text.slice(0, 150)}`;
+      if (res.status >= 500 && attempt < retries) {
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      throw new Error(`Vapi ${method} ${path} → ${lastErr}`);
+    }
+
+    if (!res.ok) {
+      lastErr = `${res.status}: ${JSON.stringify(json).slice(0, 600)}`;
+      if (res.status >= 500 && attempt < retries) {
+        await sleep(800 * (attempt + 1));
+        continue;
+      }
+      throw new Error(`Vapi ${method} ${path} → ${lastErr}`);
+    }
+    return json;
+  }
+  throw new Error(`Vapi ${method} ${path} failed after ${retries + 1} attempts → ${lastErr}`);
 }
 
 interface VapiNumber {
@@ -126,7 +169,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  assertTwilio();
+  // Listing only needs the Vapi key; importing also needs the Twilio creds
+  // (asserted below, once we know we're actually importing).
+  assertVapi();
 
   const existing = await listNumbers();
   const byE164 = new Map(existing.filter((n) => n.number).map((n) => [n.number as string, n]));
@@ -160,6 +205,9 @@ async function main(): Promise<void> {
     console.error(`Nothing to import.\n\n${USAGE}`);
     process.exit(1);
   }
+
+  // Importing places the DIDs under your Twilio credentials in Vapi.
+  assertTwilio();
 
   const attachServer = !!flags.server;
   if (attachServer && !env.serverUrl) {

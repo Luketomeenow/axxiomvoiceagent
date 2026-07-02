@@ -21,9 +21,12 @@ import {
 import { buildOutboundFirstMessage, buildOutboundSystemPrompt } from "./prompt.ts";
 import { buildOutboundTools } from "./tools.ts";
 
-export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: string } = {}) {
+export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: string; promptOverride?: string } = {}) {
   const brand = opts.brand ?? defaultBrand();
   const webhookUrl = env.serverUrl ? `${env.serverUrl.replace(/\/$/, "")}/vapi/webhook` : undefined;
+  // An approved self-learning improvement (stored per brand) replaces the code
+  // default; otherwise use the built-in prompt for this brand.
+  const systemPrompt = opts.promptOverride?.trim() || buildOutboundSystemPrompt(brand);
 
   return {
     name: `${brand.displayName} — Outbound`,
@@ -38,7 +41,7 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
       // Cap the reply length so completions finish (and start speaking) fast —
       // the prompt already asks for one or two sentences.
       maxTokens: 250,
-      messages: [{ role: "system", content: buildOutboundSystemPrompt(brand) }],
+      messages: [{ role: "system", content: systemPrompt }],
       // Warm-transfer to this brand's own human line (normalized to E.164 for Vapi).
       tools: buildOutboundTools(toE164(brand.localPhone) ?? undefined),
     },

@@ -36,9 +36,11 @@ import {
 } from "./dialer.ts";
 import { db, deleteLeadDataByPhone, purgeOldPii, replayFailedOps } from "./db.ts";
 import { toE164 } from "./phone.ts";
+import { syncTwilioCosts } from "./twilioSync.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
 import { BRANDS, getBrand } from "../assistant/brands.ts";
+import { analyzeCampaign, applyInsight, rejectInsight } from "../ai/campaignInsights.ts";
 
 export const outbound = new Hono();
 
@@ -147,6 +149,15 @@ outbound.post("/outbound/failed-ops/replay", async (c) => {
   return c.json({ ok: true, ...result });
 });
 
+// Reconcile authoritative telephony cost/status/answered-by from Twilio onto the
+// call rows (Twilio is the carrier; Vapi only reports its own platform cost).
+outbound.post("/outbound/twilio/sync", async (c) => {
+  const campaignId = c.req.query("campaignId") || undefined;
+  const result = await syncTwilioCosts({ campaignId });
+  log.info("Twilio cost sync requested", { campaignId: campaignId ?? "all", ...result });
+  return c.json({ ok: true, ...result });
+});
+
 // Data retention: purge call transcripts/recordings/raw payloads older than N
 // days (default PII_RETAIN_DAYS). Run on a schedule or on demand.
 outbound.post("/outbound/retention/purge", async (c) => {
@@ -166,6 +177,52 @@ outbound.post("/outbound/dsar/delete", async (c) => {
   const result = await deleteLeadDataByPhone(phone);
   log.info("DSAR delete requested", { phone: maskPhone(phone), ...result });
   return c.json({ ok: true, ...result });
+});
+
+// --- Continuous improvement (per-campaign transcript analysis) ------------
+
+// Analyze this campaign's recent transcripts now (also runs automatically every
+// INSIGHT_EVERY_N_CALLS calls). Produces an improvement report + a proposed
+// improved system prompt, stored as a campaign_insight.
+outbound.post("/outbound/campaign/:id/analyze", async (c) => {
+  const id = c.req.param("id");
+  const result = await analyzeCampaign(id);
+  if (!result) {
+    return c.json({ ok: false, error: "analysis unavailable (ANTHROPIC_API_KEY unset or too few transcripts)" }, 400);
+  }
+  log.info("Campaign analysis requested", { campaignId: id, ...result });
+  return c.json({ ok: true, ...result });
+});
+
+// List a campaign's improvement insights (report + suggested prompt + status).
+outbound.get("/outbound/campaign/:id/insights", async (c) => {
+  const id = c.req.param("id");
+  const limit = Math.min(50, Math.max(1, Number(c.req.query("limit")) || 20));
+  const { data, error } = await db()
+    .from("campaign_insight")
+    .select("*")
+    .eq("campaign_id", id)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ insights: data ?? [] });
+});
+
+// Approve + APPLY a proposed prompt improvement (human-in-the-loop self-learning).
+// Blocked if the compliance guardrail failed.
+outbound.post("/outbound/insights/:id/approve", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ approvedBy?: string }>().catch(() => ({}) as { approvedBy?: string });
+  const result = await applyInsight(id, body.approvedBy);
+  log.info("Insight approve requested", { insightId: id, ok: result.ok, blocked: result.blocked });
+  return c.json(result, result.ok ? 200 : 400);
+});
+
+// Reject a proposed improvement (no change to the live agent).
+outbound.post("/outbound/insights/:id/reject", async (c) => {
+  const id = c.req.param("id");
+  const result = await rejectInsight(id);
+  return c.json(result, result.ok ? 200 : 400);
 });
 
 // Per-call compliance audit rows (disclosure spoken? consent captured? DNC?).

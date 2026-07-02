@@ -104,6 +104,12 @@ export interface CallRow {
   transferred_to_human: boolean | null;
   duration_seconds: number | null;
   ended_reason: string | null;
+  ended_by: string | null; // customer | agent | operator | system
+  vapi_cost: number | null; // Vapi platform cost
+  telephony_cost: number | null; // Twilio per-call price (reconciled by twilioSync)
+  provider_call_id: string | null; // Twilio Call SID
+  provider_status: string | null;
+  answered_by: string | null;
   transcript: string | null;
   summary: string | null;
   recording_url: string | null;
