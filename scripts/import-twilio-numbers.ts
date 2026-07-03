@@ -237,7 +237,7 @@ async function main(): Promise<void> {
       number: e164,
       twilioAccountSid: env.twilioAccountSid,
       twilioAuthToken: env.twilioAuthToken,
-      name: label,
+      name: label.slice(0, 40), // Vapi caps the number name at 40 chars
     };
     if (attachServer) {
       body.server = {

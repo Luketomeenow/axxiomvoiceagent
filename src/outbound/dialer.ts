@@ -26,12 +26,14 @@ interface BrandRouting {
   brand?: string; // resolved brand slug (denormalized onto the call row)
 }
 
-/** A resolved brand → its assistant id + caller-ID number (empty if no brand). */
-async function routingForBrand(brand?: Brand): Promise<BrandRouting> {
+/** A resolved brand → its assistant id + caller-ID number (empty if no brand).
+ *  For multi-region brands, dial from the number local to the lead's state. */
+async function routingForBrand(brand?: Brand, state?: string | null): Promise<BrandRouting> {
   if (!brand) return {};
+  const byState = state ? brand.phoneNumberByState?.[state.trim().toUpperCase()] : undefined;
   return {
     assistantId: (await getBrandAssistantId(brand.slug)) || undefined,
-    phoneNumberId: brand.vapiPhoneNumberId,
+    phoneNumberId: byState || brand.vapiPhoneNumberId,
     brand: brand.slug,
   };
 }
@@ -347,7 +349,7 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
   // Automatic routing: brand (→ voice + caller-ID + compliance assistant) is
   // resolved from the campaign override → lead's servicing_brand → lead's state.
   const brand = resolveBrand({ campaignBrand, servicingBrand: lead.servicing_brand, state: lead.state });
-  const routing = await routingForBrand(brand);
+  const routing = await routingForBrand(brand, lead.state);
   const attemptNumber = (lead.attempts ?? 0) + 1;
 
   const result = await dispatchCall({
