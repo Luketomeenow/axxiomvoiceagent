@@ -40,7 +40,11 @@ export interface Brand {
   complianceNote: string; // state-specific, drafted — verify with counsel
   voiceProvider?: "vapi" | "11labs"; // "vapi" = native voice (default for brands); "11labs" = ElevenLabs voiceId
   voiceId?: string; // voice id/name for the provider above (tunable in dashboard)
-  vapiPhoneNumberId?: string; // Vapi caller-ID number to dial FROM (fill in)
+  vapiPhoneNumberId?: string; // default Vapi caller-ID number to dial FROM (fill in)
+  // Optional per-state caller-ID override for brands that span multiple regions
+  // (e.g. AmeriTex TX + CA): dial a lead from the number local to its state,
+  // falling back to vapiPhoneNumberId. Keyed by 2-letter state code.
+  phoneNumberByState?: Record<string, string>;
   assistantId?: string; // set after create-brand-assistants (or stored in DB)
 }
 
@@ -118,7 +122,7 @@ export const BRANDS: Brand[] = [
   },
   {
     slug: "axxiom-fl",
-    vapiPhoneNumberId: "bf6a8555-a3e4-422f-9e80-f3f119c31565",
+    vapiPhoneNumberId: "02c51b05-511f-412c-a722-b1a87a648005", // Twilio +1 561 (Palm Beach, FL)
     voiceProvider: "vapi",
     voiceId: "Kai", // Vapi native — friendly, relaxed, approachable (FL)
     displayName: "Axxiom Elevator Florida",
@@ -142,7 +146,7 @@ export const BRANDS: Brand[] = [
   },
   {
     slug: "arizona",
-    vapiPhoneNumberId: "3581c39d-69bc-4f5e-bddb-85888bd43a34",
+    vapiPhoneNumberId: "25af6123-f986-44d7-b177-33949e304915", // Twilio +1 928 (Flagstaff, AZ)
     voiceProvider: "vapi",
     voiceId: "Elliot", // Vapi native — professional, soothing, steady (AZ)
     displayName: "Arizona Elevator Solutions",
@@ -166,7 +170,12 @@ export const BRANDS: Brand[] = [
   },
   {
     slug: "ameritex",
-    vapiPhoneNumberId: "24509cad-f0de-41f4-8ece-ad188b77090d", // Twilio +1 510 (SF Bay Area)
+    vapiPhoneNumberId: "24509cad-f0de-41f4-8ece-ad188b77090d", // default: Twilio +1 510 (SF Bay Area)
+    // AmeriTex spans TX + CA: dial each lead from a number local to its state.
+    phoneNumberByState: {
+      TX: "3558a166-f2bb-4f3b-bd38-051743802f90", // Twilio +1 325 (TX)
+      CA: "24509cad-f0de-41f4-8ece-ad188b77090d", // Twilio +1 510 (SF Bay Area)
+    },
     voiceProvider: "vapi",
     voiceId: "Savannah", // Vapi native — straightforward, Southern accent (Texas)
     displayName: "AmeriTex Elevator Services",

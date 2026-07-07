@@ -58,6 +58,9 @@ export async function syncTwilioCosts(
     .from("call")
     .select("id, provider_call_id")
     .not("provider_call_id", "is", null)
+    // Only real Twilio Call SIDs (CA + 32 hex). Calls dialed from Vapi-bought
+    // numbers carry a UUID here and would 404 against Twilio on every pass.
+    .like("provider_call_id", "CA%")
     .is("telephony_cost", null)
     .order("created_at", { ascending: false })
     .limit(opts.limit ?? 200);

@@ -35,6 +35,7 @@ import {
   type TestCallInput,
 } from "./dialer.ts";
 import { db, deleteLeadDataByPhone, purgeOldPii, replayFailedOps } from "./db.ts";
+import { campaignWindowStatus } from "./windowStatus.ts";
 import { toE164 } from "./phone.ts";
 import { syncTwilioCosts } from "./twilioSync.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
@@ -206,6 +207,15 @@ outbound.get("/outbound/campaign/:id/insights", async (c) => {
     .limit(limit);
   if (error) return c.json({ error: error.message }, 500);
   return c.json({ insights: data ?? [] });
+});
+
+// Pre-start calling-window preview: which timezone groups of this campaign's
+// eligible leads are dialable right now, and when the rest open. Backs the
+// Start-confirmation popup in the dashboard.
+outbound.get("/outbound/campaign/:id/window-status", async (c) => {
+  const status = await campaignWindowStatus(c.req.param("id"));
+  if (!status) return c.json({ ok: false, error: "campaign not found" }, 404);
+  return c.json({ ok: true, ...status });
 });
 
 // Approve + APPLY a proposed prompt improvement (human-in-the-loop self-learning).

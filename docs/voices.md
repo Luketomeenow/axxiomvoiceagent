@@ -24,7 +24,7 @@ The **Voice** card (`web/components/VoicePicker.tsx`) lists the account's Eleven
 - **ElevenLabs agent** → the Convai POC agent (below).
 - **Vapi agent** → the env-default Vapi assistant.
 
-Each target's choice is stored separately in `app_setting` (`elevenlabs_voice_id` / `vapi_voice_id`) and applied live by PATCHing that agent. Endpoints: `GET /outbound/voices`, `POST /outbound/voice` (`{ voiceId, target }`).
+Each target's choice is stored separately in `app_setting` (`elevenlabs_voice_id` / `vapi_voice_id`) and applied live by PATCHing that agent. Endpoints: `GET /outbound/voices`, `POST /outbound/voice` (`{ voiceId, target }`). Re-runs of `create-outbound-assistant` honor the picker's stored choice (falling back to `ELEVENLABS_VOICE_ID`).
 
 > Per-brand voices are currently set in the registry (`brands.ts`) + `create-brand-assistants`, not yet in this picker.
 
