@@ -65,6 +65,34 @@ Return ONLY a JSON object (no prose, no markdown) with exactly these keys:
 - "suggestedPrompt": a complete, ready-to-use REPLACEMENT system prompt that applies your improvements. It MUST preserve every compliance rule from the current prompt verbatim in intent: the AI + recorded-line disclosure, calling confirmConsent before qualifying, honoring opt-out/do-not-call immediately, no price/timeline/guarantees, and the anti-manipulation guardrails. Never weaken or remove compliance language.`;
 
 /**
+ * Tolerant parse of the model's JSON reply. Strips accidental ```json fences,
+ * and if the reply was truncated (hit max_tokens mid-object) it recovers the
+ * `report` string with a lenient regex so a long analysis isn't lost — but
+ * deliberately DROPS a partial `suggestedPrompt`, since an incomplete prompt
+ * must never become an applyable proposal (it would also fail the guardrail).
+ */
+function parseInsightReply(raw: string): { report?: string; suggestedPrompt?: string } | null {
+  let t = (raw ?? "").trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  const start = t.indexOf("{");
+  if (start === -1) return null;
+  try {
+    return JSON.parse(t.slice(start, t.lastIndexOf("}") + 1)) as { report?: string; suggestedPrompt?: string };
+  } catch {
+    const m = t.match(/"report"\s*:\s*"((?:[^"\\]|\\.)*)/s);
+    if (!m) return null;
+    let report: string;
+    try {
+      report = JSON.parse(`"${m[1]}"`);
+    } catch {
+      report = m[1];
+    }
+    return { report, suggestedPrompt: undefined };
+  }
+}
+
+/**
  * Analyze a campaign's recent transcripts and store a campaign_insight proposal.
  * Returns the inserted row id, or null if it couldn't run (no key / too few calls).
  */
@@ -119,15 +147,27 @@ export async function analyzeCampaign(
     if (!anthropic) anthropic = new Anthropic({ apiKey: env.anthropicApiKey });
 
     const res = await anthropic.messages.create({
+      // The reply carries a multi-paragraph report AND a complete replacement
+      // system prompt (itself long), so 4096 truncated mid-JSON and crashed the
+      // parser ("Unterminated string"). Give it real headroom.
       model: env.anthropicModel,
-      max_tokens: 4096,
+      max_tokens: 8192,
       system: SYSTEM,
       messages: [{ role: "user", content: user }],
     });
 
     const text = res.content.find((b) => b.type === "text")?.text ?? "";
-    const json = text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1);
-    const parsed = JSON.parse(json) as { report?: string; suggestedPrompt?: string };
+    const truncated = res.stop_reason === "max_tokens";
+    if (truncated) log.warn("campaignInsights: response hit max_tokens — output truncated", { campaignId });
+    const parsed = parseInsightReply(text);
+    if (!parsed) {
+      log.error("campaignInsights: could not parse model reply", {
+        campaignId,
+        stop: res.stop_reason,
+        sample: text.slice(0, 200),
+      });
+      return null;
+    }
     const report = (parsed.report ?? "").trim() || null;
     const suggestedPrompt = (parsed.suggestedPrompt ?? "").trim() || null;
 

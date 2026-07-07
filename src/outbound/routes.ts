@@ -187,12 +187,26 @@ outbound.post("/outbound/dsar/delete", async (c) => {
 // improved system prompt, stored as a campaign_insight.
 outbound.post("/outbound/campaign/:id/analyze", async (c) => {
   const id = c.req.param("id");
-  const result = await analyzeCampaign(id);
-  if (!result) {
-    return c.json({ ok: false, error: "analysis unavailable (ANTHROPIC_API_KEY unset or too few transcripts)" }, 400);
+  if (!env.anthropicApiKey) {
+    return c.json({ ok: false, error: "analysis unavailable (ANTHROPIC_API_KEY not set on the server)" }, 400);
   }
-  log.info("Campaign analysis requested", { campaignId: id, ...result });
-  return c.json({ ok: true, ...result });
+  // Fast eligibility pre-check so the operator gets immediate feedback.
+  const { count } = await db()
+    .from("call")
+    .select("id", { count: "exact", head: true })
+    .eq("campaign_id", id)
+    .eq("status", "ended")
+    .not("transcript", "is", null);
+  if ((count ?? 0) < 3) {
+    return c.json({ ok: false, error: "need at least 3 ended calls with transcripts to analyze" }, 400);
+  }
+  // The analysis is a 1–2 min Claude call over the transcript batch. Run it
+  // DETACHED and return immediately — otherwise the dashboard fetch (and any
+  // proxy) times out mid-request and surfaces as "Failed to fetch". The new
+  // campaign_insight row appears via the panel's polling / Realtime.
+  log.info("Campaign analysis started", { campaignId: id, transcripts: count });
+  void analyzeCampaign(id).catch((err) => log.warn("Manual analyze failed", { campaignId: id, err: String(err) }));
+  return c.json({ ok: true, started: true });
 });
 
 // List a campaign's improvement insights (report + suggested prompt + status).

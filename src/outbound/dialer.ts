@@ -595,6 +595,7 @@ export async function runCampaignTick(): Promise<void> {
     return;
   }
   ticking = true;
+  const analyzeIds: string[] = [];
   try {
     await sweepStaleCalls();
 
@@ -609,15 +610,22 @@ export async function runCampaignTick(): Promise<void> {
       const campaignId = (campaign as { id?: string }).id;
       try {
         await tickCampaign(campaign as Record<string, unknown>);
-        if (campaignId) await maybeAutoAnalyze(campaignId);
+        if (campaignId) analyzeIds.push(campaignId);
       } catch (err) {
         log.error("Campaign tick failed", { campaignId, err: String(err) });
       }
     }
-    await maybeSyncTwilio();
   } finally {
     ticking = false;
   }
+
+  // Background maintenance runs AFTER the re-entrancy guard is released, detached
+  // (not awaited), so a slow Claude analysis or Twilio sync can NEVER block the
+  // next dialing tick — that blocking was starving the dialer ("only 1 call at a
+  // time / nothing calling"). Both self-throttle (cooldown / interval) and
+  // swallow their own errors, so fire-and-forget is safe.
+  for (const id of analyzeIds) void maybeAutoAnalyze(id);
+  void maybeSyncTwilio();
 }
 
 /** Dial one running campaign up to its concurrency cap + remaining per-run budget. */
@@ -705,9 +713,14 @@ async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
 // instance, like the rest of the worker state).
 const AUTO_ANALYZE_COOLDOWN_MS = 30 * 60_000;
 const lastAutoAnalyze = new Map<string, number>();
+// Guards against a detached analysis for a campaign overlapping itself across
+// ticks (it now runs un-awaited, so a slow Claude call could still be in flight
+// when the next tick fires).
+const analyzeInFlight = new Set<string>();
 
 async function maybeAutoAnalyze(campaignId: string): Promise<void> {
   if (!env.anthropicApiKey) return;
+  if (analyzeInFlight.has(campaignId)) return;
   const n = env.insightEveryNCalls;
   const [{ count: ended }, { count: insights }] = await Promise.all([
     db().from("call").select("id", { count: "exact", head: true }).eq("campaign_id", campaignId).eq("status", "ended"),
@@ -722,9 +735,12 @@ async function maybeAutoAnalyze(campaignId: string): Promise<void> {
   if (now - (lastAutoAnalyze.get(campaignId) ?? 0) < AUTO_ANALYZE_COOLDOWN_MS) return;
   lastAutoAnalyze.set(campaignId, now);
 
+  analyzeInFlight.add(campaignId);
   log.info("Auto-analyzing campaign transcripts", { campaignId, endedCount, insightCount, n });
   const { analyzeCampaign } = await import("../ai/campaignInsights.ts");
-  await analyzeCampaign(campaignId).catch((err) => log.warn("Auto-analyze failed", { campaignId, err: String(err) }));
+  await analyzeCampaign(campaignId)
+    .catch((err) => log.warn("Auto-analyze failed", { campaignId, err: String(err) }))
+    .finally(() => analyzeInFlight.delete(campaignId));
 }
 
 // Periodically reconcile Twilio telephony cost/status onto recent calls. Twilio

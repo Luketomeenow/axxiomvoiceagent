@@ -38,13 +38,37 @@ export function InsightsPanel({ campaignId }: { campaignId: string | null }) {
     if (!campaignId) return;
     setBusy(true);
     setMsg(null);
+    const beforeId = insights[0]?.id ?? null;
     try {
       const res = await api.analyzeCampaign(campaignId);
-      if (!res?.ok) setMsg(res?.error ?? "Analysis unavailable.");
-      await load();
+      if (!res?.ok) {
+        setMsg(res?.error ?? "Analysis unavailable.");
+        setBusy(false);
+        return;
+      }
+      // The server runs the analysis in the background (1–2 min). Poll for the
+      // new insight row instead of holding the request open (which would time out).
+      setMsg("Analyzing recent transcripts… this takes a minute or two. You can leave this page.");
+      const deadline = Date.now() + 3 * 60_000;
+      const tick = async () => {
+        const list = await api.campaignInsights(campaignId).catch(() => null);
+        if (list && (list[0]?.id ?? null) !== beforeId) {
+          setInsights(list);
+          setMsg("Analysis ready.");
+          setBusy(false);
+          return;
+        }
+        if (Date.now() > deadline) {
+          setMsg("Still working — the analysis will appear here shortly.");
+          setBusy(false);
+          await load();
+          return;
+        }
+        setTimeout(tick, 10_000);
+      };
+      setTimeout(tick, 8_000);
     } catch (err) {
       setMsg(String(err));
-    } finally {
       setBusy(false);
     }
   }

@@ -151,6 +151,8 @@ The analytics page reads pre-aggregated SQL views (`GET /outbound/analytics`, `?
 
 **Telephony costs come from Twilio, not Vapi.** Vapi owns the conversation (transcript, recording, disposition, its own `vapi_cost`); **Twilio owns the authoritative carrier cost/status/answered-by**, reconciled onto call rows by Twilio Call SID — automatically every ~5 min while the worker runs, or on demand via the **"↻ Twilio costs"** button (`POST /outbound/twilio/sync`). Needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` on the server, else telephony cost stays empty.
 
+> **Analysis runs in the background.** A batch analysis is a 1–2 minute Claude call, so both the auto-trigger and the **Analyze now** button run it **detached** — the worker never blocks dialing on it, and the dashboard polls for the finished `campaign_insight` row rather than holding the request open (which would time out as "Failed to fetch"). Analysis output is bounded at 8192 tokens and parsed leniently, so a long report + full proposed prompt won't truncate the result.
+
 ## 6. Improve it — AI campaign insights (human-gated self-learning)
 
 `src/ai/campaignInsights.ts` reviews a campaign's recent transcripts + outcomes and writes a **`campaign_insight`** row containing (a) an improvement report (what's working, where calls die, objections) and (b) a **proposed improved system prompt** for that brand.
