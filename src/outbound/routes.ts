@@ -132,12 +132,31 @@ outbound.get("/outbound/analytics", async (c) => {
   const firstError = funnel.error || quality.error || daily.error || attempts.error;
   if (firstError) return c.json({ error: firstError.message }, 500);
 
+  // Reconcile the two view grains into single headline numbers: cost lives in
+  // v_call_quality (campaign×brand), qualified in v_campaign_funnel (campaign).
+  const q = quality.data ?? [];
+  const f = funnel.data ?? [];
+  const sum = <T,>(rows: T[], pick: (r: T) => number | null | undefined) =>
+    rows.reduce((a, r) => a + (Number(pick(r)) || 0), 0);
+  const totalCost = sum(q, (r: any) => r.total_cost);
+  const qualified = sum(f, (r: any) => r.qualified);
+  const calls = sum(q, (r: any) => r.calls);
+  const connected = sum(q, (r: any) => r.connected);
+  const reachedMachine = sum(q, (r: any) => (r.voicemail ?? 0) + (r.no_answer ?? 0));
+
   return c.json({
-    funnel: funnel.data ?? [],
-    quality: quality.data ?? [],
+    funnel: f,
+    quality: q,
     daily: daily.data ?? [],
     attempts: attempts.data ?? [],
     unresolvedFailures: deadLetters.count ?? 0,
+    summary: {
+      totalCost: Math.round(totalCost * 100) / 100,
+      qualified,
+      costPerQualified: qualified > 0 ? Math.round((totalCost / qualified) * 100) / 100 : null,
+      connectRate: calls > 0 ? Math.round((connected / calls) * 1000) / 10 : null, // %
+      reachedMachine,
+    },
     days,
   });
 });

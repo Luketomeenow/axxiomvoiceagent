@@ -56,8 +56,10 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
     transcriber: buildTranscriber(),
     startSpeakingPlan: buildStartSpeakingPlan(),
     stopSpeakingPlan: buildStopSpeakingPlan(),
-    // Check in if the caller goes quiet (e.g. on hold), then end gracefully.
-    hooks: buildIdleHooks(),
+    // Check in if the caller goes quiet, then end gracefully. Tighter than the
+    // inbound default (8s/18s then end ~26s): dead air on a cold outbound dial is
+    // almost always a machine or empty line, so we free the slot fast.
+    hooks: buildIdleHooks({ checkIns: [8, 18], endAt: 26 }),
 
     // Outbound should sound clean and clearly disclosed, not like a call center.
     backgroundSound: "off",
@@ -71,7 +73,10 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
     serverMessages: ["tool-calls", "end-of-call-report", "status-update", "transcript"],
 
     maxDurationSeconds: 480,
-    silenceTimeoutSeconds: 30,
+    // Backstop only — the idle-hook ladder above ends dead-air calls gracefully
+    // at ~26s. Kept above the ladder so Vapi's hard timeout never pre-empts the
+    // polite hand-off mid-sentence (the old 30s fired between the 24s/36s prompts).
+    silenceTimeoutSeconds: 35,
     // Detect voicemail so the dialer can disposition + retry instead of pitching a
     // machine — but it false-positives on live humans, so it's off for testing
     // (ENABLE_VOICEMAIL_DETECTION). `null` clears any existing setting on PATCH.
@@ -107,7 +112,7 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
             },
             finalDisposition: {
               type: "string",
-              enum: ["qualified", "needs_followup", "not_interested", "remove", "voicemail", "no_answer"],
+              enum: ["qualified", "needs_followup", "not_interested", "remove", "voicemail", "no_answer", "ivr"],
               description: "Best-fit outcome for this call.",
             },
           },

@@ -100,24 +100,34 @@ export function buildStopSpeakingPlan() {
 }
 
 /**
- * "On hold" handling via Vapi assistant hooks. If the caller goes quiet (e.g.
- * asked us to hold), check back in 3 times — at ~12s, 24s, and 36s of silence —
- * then end the call politely at ~48s. `triggerResetMode: onUserSpeech` resets
- * the timers the moment they speak, so an engaged caller never hears these.
+ * Silence handling via Vapi assistant hooks. If the caller goes quiet, check back
+ * in at each `checkIns` second-mark, then end the call politely at `endAt`.
+ * `triggerResetMode: onUserSpeech` resets the timers the moment they speak, so an
+ * engaged caller never hears these.
+ *
+ * Defaults (inbound): patient — 12/24/36s check-ins, end at 48s.
+ * Outbound passes a tighter ladder (see outbound config): dead air on a cold
+ * dial is almost always a machine or an empty line, so we give up faster to free
+ * the concurrency slot for the next dial instead of burning 45-78s of silence.
  */
-export function buildIdleHooks() {
+export function buildIdleHooks(opts: { checkIns?: number[]; endAt?: number } = {}) {
+  const checkIns = opts.checkIns ?? [12, 24, 36];
+  const endAt = opts.endAt ?? 48;
+  const messages = [
+    "Hey — are you still there?",
+    "No rush, just making sure I didn't lose you.",
+    "I'll hang on a few more seconds in case you're still there.",
+  ];
   const checkIn = (timeoutSeconds: number, exact: string) => ({
     on: "customer.speech.timeout" as const,
     options: { timeoutSeconds, triggerMaxCount: 1, triggerResetMode: "onUserSpeech" as const },
     do: [{ type: "say" as const, exact }],
   });
   return [
-    checkIn(12, "Hey — are you still there?"),
-    checkIn(24, "No rush, just making sure I didn't lose you."),
-    checkIn(36, "I'll hang on a few more seconds in case you're still there."),
+    ...checkIns.map((s, i) => checkIn(s, messages[Math.min(i, messages.length - 1)])),
     {
       on: "customer.speech.timeout" as const,
-      options: { timeoutSeconds: 48, triggerMaxCount: 1, triggerResetMode: "onUserSpeech" as const },
+      options: { timeoutSeconds: endAt, triggerMaxCount: 1, triggerResetMode: "onUserSpeech" as const },
       do: [
         { type: "say" as const, exact: "Looks like now's not a great time — I'll let you go, and we'll follow up. Take care!" },
         { type: "tool" as const, tool: { type: "endCall" as const } },

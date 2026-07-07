@@ -174,6 +174,7 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
     args.bestCallbackName && `Best contact: ${args.bestCallbackName}`,
     args.bestCallbackPhone && `Callback: ${args.bestCallbackPhone}`,
     args.bestCallbackEmail && `Email: ${args.bestCallbackEmail}`,
+    args.bestCallbackTime && `Best time: ${args.bestCallbackTime}`,
     args.notes,
   ].filter(Boolean);
   const notes = noteParts.join(" | ");
@@ -209,6 +210,20 @@ async function runQualifyLead(args: Record<string, unknown>, message: VapiMessag
     : "Saved. Note their hesitation; wrap up politely and call recordDisposition with the right outcome.";
 }
 
+/**
+ * Retry backoff that SPREADS attempts across day-parts instead of a flat hour —
+ * calling the same dead number 3× in one afternoon connects with no one. The
+ * dialer only dials inside the 8-9pm local window, so a delay that lands at a
+ * bad hour simply waits for the window; the point is to shift each retry to a
+ * different part of the day/next day. Falls back to env.retryBackoffMinutes.
+ */
+function retryDelayMs(attempts: number | null | undefined): number {
+  const hoursByAttempt = [3, 20]; // after 1st fail → +3h (different day-part); after 2nd → next day
+  const a = typeof attempts === "number" ? attempts : 0;
+  if (a <= 0) return env.retryBackoffMinutes * 60_000;
+  return hoursByAttempt[Math.min(a - 1, hoursByAttempt.length - 1)] * 60 * 60_000;
+}
+
 async function runRecordDisposition(args: Record<string, unknown>, message: VapiMessage): Promise<string> {
   const leadId = leadIdOf(message);
   const callRowId = await resolveCallRowId(message);
@@ -219,6 +234,12 @@ async function runRecordDisposition(args: Record<string, unknown>, message: Vapi
     const update: Record<string, unknown> = { disposition, notes };
     // Stamp the moment a lead became sales-ready.
     if (disposition === "qualified") update.qualified_at = new Date().toISOString();
+    // Reached a machine/menu → stays retryable, but shift the redial to a
+    // different day-part so we don't hit the same voicemail/IVR back-to-back.
+    if (disposition === "voicemail" || disposition === "ivr" || disposition === "no_answer") {
+      const { data: l } = await db().from("lead").select("attempts").eq("id", leadId).maybeSingle();
+      update.next_attempt_after = new Date(Date.now() + retryDelayMs(l?.attempts)).toISOString();
+    }
     await updateLead(leadId, update);
   }
   if (callRowId) {
@@ -496,13 +517,13 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
       update.disposition = fallback;
       if (leadId) {
         // Don't overwrite a disposition a tool already set on the lead.
-        const { data: lead } = await db().from("lead").select("disposition").eq("id", leadId).maybeSingle();
+        const { data: lead } = await db().from("lead").select("disposition, attempts").eq("id", leadId).maybeSingle();
         if (lead && (lead.disposition === "calling" || lead.disposition === "queued" || lead.disposition === "new")) {
           const leadUpdate: Record<string, unknown> = { disposition: fallback };
           // Retry backoff: a no-answer/voicemail lead stays retryable but isn't
-          // re-dialed until the backoff window elapses (no back-to-back dials).
+          // re-dialed until the backoff elapses — spread across day-parts.
           if (fallback === "no_answer" || fallback === "voicemail") {
-            leadUpdate.next_attempt_after = new Date(Date.now() + env.retryBackoffMinutes * 60_000).toISOString();
+            leadUpdate.next_attempt_after = new Date(Date.now() + retryDelayMs(lead.attempts)).toISOString();
           }
           await updateLead(leadId, leadUpdate);
         }
