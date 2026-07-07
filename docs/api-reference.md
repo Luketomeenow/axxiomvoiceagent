@@ -28,6 +28,7 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 | `GET` | `/outbound/stats` | `?campaignId=` | Disposition breakdown + total, scoped to a campaign when given. |
 | `POST` | `/outbound/campaign/start` | `{ campaignId?, maxCalls?, maxConcurrent? }` | Mark the campaign `running`, reset `run_started_at` (each Start is a fresh batch), optionally set the per-run call budget + concurrency, auto-assign its brand, and start the worker. Omit `campaignId` to start all non-`done` (no budget). |
 | `POST` | `/outbound/campaign/pause` | `{ campaignId? }` | Pause one (or all) campaigns; the worker stops only when none remain running. |
+| `GET` | `/outbound/campaign/:id/window-status` | — | Pre-start preview: the campaign's eligible leads grouped by **their own timezone** — how many are dialable right now vs. when each group's calling window opens. Backs the Start-confirmation popup. |
 | `POST` | `/outbound/campaign/:id/update` | `{ name?, region?, brand?, maxConcurrent?, maxCalls? }` | Rename / re-region / set brand (also sets campaign `timezone` from the brand) / tune concurrency + per-run budget. |
 | `POST` | `/outbound/campaign/:id/delete` | — | Delete a campaign **and all its leads** (calls/events cascade). |
 | `GET` | `/outbound/brand-list` | — | Registry brands for the campaign dropdown (`slug`, `displayName`, `serviceArea`). |

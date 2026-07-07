@@ -174,6 +174,31 @@ export interface ComplianceResponse {
   error?: string;
 }
 
+export type WindowStatusGroup = {
+  timezone: string;
+  tzLabel: string;
+  states: string[];
+  leads: number;
+  localTime: string;
+  insideWindow: boolean;
+  minutesUntilOpen: number;
+  opensAt: string | null;
+};
+
+export type WindowStatus = {
+  ok: boolean;
+  campaignId: string;
+  name: string;
+  brand: string | null;
+  windowStart: number;
+  windowEnd: number;
+  totalEligible: number;
+  dialableNow: number;
+  waiting: number;
+  sampled: boolean;
+  groups: WindowStatusGroup[];
+};
+
 export const api = {
   analytics: (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
     const q = new URLSearchParams({ days: String(days) });
@@ -187,6 +212,8 @@ export const api = {
   },
   startCampaign: (campaignId?: string, opts?: { maxCalls?: number | null; maxConcurrent?: number }) =>
     post("/outbound/campaign/start", { campaignId, ...opts }),
+  windowStatus: (campaignId: string): Promise<WindowStatus> =>
+    get(`/outbound/campaign/${campaignId}/window-status`) as Promise<WindowStatus>,
   pauseCampaign: (campaignId?: string) => post("/outbound/campaign/pause", { campaignId }),
   updateCampaign: (
     id: string,

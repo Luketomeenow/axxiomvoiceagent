@@ -2,8 +2,15 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { api, type BrandInfoOption } from "@/lib/api";
+import { api, type BrandInfoOption, type WindowStatus } from "@/lib/api";
 import type { Campaign } from "@/lib/types";
+
+/** "8:00 AM PT (in 1h 48m)"-style countdown for a window that hasn't opened. */
+function untilLabel(minutes: number): string {
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return h > 0 ? `in ${h}h ${m}m` : `in ${m}m`;
+}
 
 export function CampaignControls({
   campaignId,
@@ -23,6 +30,8 @@ export function CampaignControls({
   const [callsThisRun, setCallsThisRun] = useState("25");
   const [concurrency, setConcurrency] = useState("1");
   const [placedThisRun, setPlacedThisRun] = useState(0);
+  // Pre-start confirmation: calling-window status fetched when Start is clicked.
+  const [preflight, setPreflight] = useState<WindowStatus | null>(null);
 
   async function load() {
     const { data } = await supabase.from("campaign").select("*").order("created_at", { ascending: false });
@@ -90,17 +99,40 @@ export function CampaignControls({
 
   async function toggle() {
     if (!campaign) return;
+    if (campaign.status === "running") {
+      setBusy(true);
+      try {
+        await api.pauseCampaign(campaign.id);
+        await load();
+        onChange();
+      } finally {
+        setBusy(false);
+      }
+      return;
+    }
+    // Starting: show the calling-window preflight first (per-timezone "right
+    // time to start"). If the endpoint isn't deployed yet, start directly.
     setBusy(true);
     try {
-      if (campaign.status === "running") {
-        await api.pauseCampaign(campaign.id);
-      } else {
-        // Empty input = unlimited (null); otherwise dial up to N this run.
-        const n = callsThisRun.trim();
-        const maxCalls = n === "" ? null : Math.max(1, Number(n) || 0);
-        const conc = Math.max(1, Number(concurrency) || 1);
-        await api.startCampaign(campaign.id, { maxCalls, maxConcurrent: conc });
-      }
+      const status = await api.windowStatus(campaign.id);
+      setPreflight(status);
+    } catch {
+      await doStart();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doStart() {
+    if (!campaign) return;
+    setBusy(true);
+    try {
+      // Empty input = unlimited (null); otherwise dial up to N this run.
+      const n = callsThisRun.trim();
+      const maxCalls = n === "" ? null : Math.max(1, Number(n) || 0);
+      const conc = Math.max(1, Number(concurrency) || 1);
+      await api.startCampaign(campaign.id, { maxCalls, maxConcurrent: conc });
+      setPreflight(null);
       await load();
       onChange();
     } finally {
@@ -302,6 +334,70 @@ export function CampaignControls({
           </div>
         )}
       </div>
+
+      {preflight && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => setPreflight(null)}>
+          <div className="card card-pad w-full max-w-lg space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div>
+              <div className="text-lg font-semibold">Start “{preflight.name}”?</div>
+              <div className="mt-0.5 text-xs text-slate-400">
+                Calling window {preflight.windowStart}:00–{preflight.windowEnd}:00 in each <b>lead’s own timezone</b>
+                {preflight.brand ? <> · brand <span className="text-slate-200">{preflight.brand}</span></> : null}
+              </div>
+            </div>
+
+            {preflight.totalEligible === 0 ? (
+              <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+                No eligible leads right now — everything is done, capped out, in retry backoff, or on the DNC list.
+                Starting is harmless but nothing will dial.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {preflight.groups.map((g) => (
+                  <div key={g.timezone} className="flex items-center justify-between gap-3 rounded-lg border border-white/10 bg-ink px-3 py-2 text-sm">
+                    <div className="flex items-center gap-2.5">
+                      <span className={`h-2 w-2 shrink-0 rounded-full ${g.insideWindow ? "bg-emerald-400" : "bg-amber-400"}`} />
+                      <span>
+                        <span className="tabular-nums font-semibold text-slate-100">{g.leads.toLocaleString()}</span>{" "}
+                        <span className="text-slate-300">{g.states.join("/")} leads</span>
+                        <span className="text-slate-500"> · {g.localTime} {g.tzLabel}</span>
+                      </span>
+                    </div>
+                    <span className={`shrink-0 text-xs ${g.insideWindow ? "text-emerald-300" : "text-amber-300"}`}>
+                      {g.insideWindow
+                        ? "dialable now"
+                        : `opens ${preflight.windowStart}:00 ${g.tzLabel} (${untilLabel(g.minutesUntilOpen)})`}
+                    </span>
+                  </div>
+                ))}
+                <div className="text-xs text-slate-400">
+                  <span className="font-semibold text-slate-200">{preflight.dialableNow.toLocaleString()}</span> of{" "}
+                  {preflight.totalEligible.toLocaleString()} eligible leads are inside their window right now
+                  {preflight.sampled ? " (large campaign — counts sampled)" : ""}.
+                  {preflight.waiting > 0 && (
+                    <> Starting is safe — the dialer holds each lead until its local window opens, then begins automatically.</>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button onClick={() => setPreflight(null)} disabled={busy} className="btn btn-ghost">
+                Cancel
+              </button>
+              <button onClick={doStart} disabled={busy} className="btn btn-primary">
+                {busy
+                  ? "…"
+                  : preflight.dialableNow > 0
+                    ? `Start — ${preflight.dialableNow.toLocaleString()} dialable now`
+                    : preflight.groups.length && preflight.totalEligible > 0
+                      ? `Start — begins ${preflight.windowStart}:00 ${preflight.groups[0].tzLabel}`
+                      : "Start anyway"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

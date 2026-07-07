@@ -38,7 +38,7 @@ Or upload from the dashboard (**Import leads** card → preview sheets → impor
 
 ### Start / pause — with a per-run budget
 
-Pick the campaign in the dashboard and hit **Start** (optionally setting **Calls this run** and **concurrency**), or:
+Pick the campaign in the dashboard and hit **Start** (optionally setting **Calls this run** and **concurrency**). A **confirmation popup** first shows the calling-window status per timezone group — how many eligible leads are dialable *right now* vs. when each group's window opens (e.g. "661 CA leads — opens 8:00 AM PT, in 47m") — so a quiet campaign is never a mystery. Starting early is always safe: the dialer holds each lead until its local window opens. Under the hood:
 
 - `POST /outbound/campaign/start` `{ campaignId, maxCalls?, maxConcurrent? }` — marks it `running`, stamps `run_started_at`, and starts the worker. **Each Start is a fresh batch**: the worker counts dial attempts since `run_started_at` and **auto-pauses that campaign** when it reaches `maxCalls`. Omit `maxCalls` for unlimited.
 - `POST /outbound/campaign/pause` — pause one (or all). The worker keeps ticking while any campaign runs and self-stops when none do.
