@@ -36,6 +36,7 @@ export type Disposition =
   | "remove"
   | "no_answer"
   | "voicemail"
+  | "ivr"
   | "bad_number"
   | "not_interested"
   | "dnc";

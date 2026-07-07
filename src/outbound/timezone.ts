@@ -67,5 +67,21 @@ const STATE_TZ: Record<string, string> = {
 /** IANA timezone for a US state code (e.g. "CA" → "America/Los_Angeles"), or undefined. */
 export function timezoneForState(state: string | null | undefined): string | undefined {
   if (!state) return undefined;
-  return STATE_TZ[state.trim().toUpperCase()];
+  return STATE_TZ[normalizeStateCode(state) ?? ""];
+}
+
+/**
+ * Clean a workbook state value to a 2-letter code. Handles the county-suffixed
+ * codes seen in the lead data ("FLCO", "FLSR", "FLBR", "FLMD" → "FL") by taking
+ * the 2-letter prefix when it's a real state. Without this those leads don't
+ * resolve a timezone (→ TCPA-window fallback) or a brand (`brandForState`).
+ * Unknown values are returned uppercased/trimmed, unchanged in meaning.
+ */
+export function normalizeStateCode(state: string | null | undefined): string | null {
+  const raw = (state ?? "").trim().toUpperCase();
+  if (!raw) return null;
+  if (STATE_TZ[raw]) return raw;
+  const prefix = raw.slice(0, 2);
+  if (raw.length > 2 && STATE_TZ[prefix]) return prefix;
+  return raw;
 }
