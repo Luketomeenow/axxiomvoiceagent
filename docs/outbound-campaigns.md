@@ -1,23 +1,25 @@
 # Outbound Campaigns
 
-A compliant outbound calling system that dials elevator-violation leads **region by region**, qualifies whether they want Axxiom's help, looks up violation **codes** accurately, dispositions each lead into **sales-ready** data, and is monitored live from the dashboard. Everything lives in a dedicated Supabase **`outbound` schema** (separate from the inbound `ax_voice_call`).
+A compliant outbound calling system that dials elevator-violation leads **region by region**, discloses + captures consent, qualifies whether they want the brand's help, looks up violation **codes** accurately, dispositions each lead into **sales-ready** data — and is monitored, measured, and **continuously improved** from the dashboard. Everything lives in a dedicated Supabase **`outbound` schema** (separate from the inbound `ax_voice_call`).
 
 ```
-Leads xlsx ──import (per region)──▶ outbound.lead
-Worker / "call now" / test call ──POST /call──▶ Vapi ──status/transcript/tools/end-of-call──▶ /vapi/webhook
-                                                              │
-                          outbound.call + call_event + lead disposition + sales fields
-                                                              │
-Dashboard ◀── Supabase Realtime ──┘     ◀── start/pause, call-now, test-call, export ── Hono API
+Leads xlsx ──import (CLI or dashboard upload)──▶ outbound.lead ──auto-assign──▶ campaign.brand
+Worker (15s tick) / "call now" / test call ──▶ Vapi ──status/transcript/tools/end-of-call──▶ /vapi/webhook
+        │  guardrails: window(lead tz) · DNC · per-number cap · attempts+backoff ·        │
+        │  in-flight guard · per-run budget · stale sweeper · systemic auto-pause          ▼
+        │                                     outbound.call + call_event + lead disposition + sales fields
+        ├── every ~5 min: Twilio cost/status sync            │
+        └── every N ended calls: AI campaign insight         ▼
+Dashboard (login-gated) ◀── Supabase Realtime + authenticated API ── console + /analytics
 ```
 
-The outbound assistant is defined in `src/assistant/outbound/` (qualification prompt, compliant disclosure, tools) and pushed to Vapi with `bun run create-outbound-assistant`. The dialer, webhook handlers, and HTTP API live in `src/outbound/`.
+The shared outbound assistant logic is defined in `src/assistant/outbound/` (qualification prompt, deterministic disclosure opener, tools); each **brand** gets its own Vapi assistant + Twilio caller ID ([brands.md](brands.md)). The dialer, webhook handlers, and HTTP API live in `src/outbound/`.
 
 ---
 
 ## 1. Launch a campaign per region
 
-**The model is one campaign per region.** Each region's workbook is imported into its own `outbound.campaign` row; the dialer scopes all calling to a single `campaign_id`, and the dashboard has a **region/campaign selector** that scopes the stats, leads table, and exports.
+**The model is one campaign per region.** Each region's workbook is imported into its own `outbound.campaign` row; the dashboard has a **region/campaign selector** that scopes the stats, leads table, live monitor, and exports.
 
 ### Import a region's leads
 
@@ -25,26 +27,36 @@ The outbound assistant is defined in `src/assistant/outbound/` (qualification pr
 bun run import-leads <path-to-xlsx> --region "CA — Bay Area" [--sheet "Tier A - Campaign Ready"] [--campaign "Custom name"]
 ```
 
-- `--region` names (and creates/updates) the campaign and is stamped on every lead in that file. The campaign name defaults to the region; override with `--campaign`.
-- Phones are normalized to E.164, deduped on `(device_id, contact_phone)`, and toll-free-only rows are flagged `bad_number`.
-- Re-running the same region is safe — it upserts that campaign and its leads only.
+Or upload from the dashboard (**Import leads** card → preview sheets → import; 15 MB cap).
 
-Repeat for each region (Bay Area, LA, etc.). Each becomes a separately controllable campaign.
+- `--region` names (and creates/updates) the campaign and is stamped on every lead in that file. The campaign name defaults to the region; override with `--campaign`.
+- Phones are normalized to E.164, deduped on `(device_id, contact_phone)`, direct contact numbers are preferred over owner lines, and toll-free-only rows are flagged `bad_number`.
+- **The campaign's brand is auto-assigned from the leads** right after import (see [brands.md](brands.md)) — no manual voice/caller-ID picking needed.
+- Re-running the same region is safe — it upserts that campaign and its leads only.
 
 > Expected workbook columns (read leniently): `contact_name`, `contact_title`, `contact_email`, `contact_phone`, `owner_phone`, `building_name`, `address`, `city`, `state`, `zip`, `market`, `device_id`, `equipment_type`, `manufacturer`, `service_company`, `oem_match`, `problem_type`, `inspection_type`, `violation_codes`, `violation_count`, `violation_details`, `last_inspection_date`, `cert_expiry_date`, `lead_score`, `lead_tier`, `servicing_brand`, `source_url`, `date_scraped`.
 
-### Start / pause
+### Start / pause — with a per-run budget
 
-Pick the region in the dashboard's **Region / campaign** selector and hit **Start campaign** (or **Pause**). Under the hood:
+Pick the campaign in the dashboard and hit **Start** (optionally setting **Calls this run** and **concurrency**), or:
 
-- `POST /outbound/campaign/start` marks the campaign `running` and starts the worker.
-- The worker (`runCampaignTick`, every 15s) dials eligible leads for that campaign — highest `lead_score` first, within the calling window, up to the concurrency cap and attempt cap, skipping DNC and missing-phone leads.
+- `POST /outbound/campaign/start` `{ campaignId, maxCalls?, maxConcurrent? }` — marks it `running`, stamps `run_started_at`, and starts the worker. **Each Start is a fresh batch**: the worker counts dial attempts since `run_started_at` and **auto-pauses that campaign** when it reaches `maxCalls`. Omit `maxCalls` for unlimited.
+- `POST /outbound/campaign/pause` — pause one (or all). The worker keeps ticking while any campaign runs and self-stops when none do.
 
-The calling window, concurrency, and max attempts come from the campaign row (falling back to env defaults: `CALL_WINDOW_START`/`END`, `MAX_CONCURRENT_CALLS`, `MAX_CALL_ATTEMPTS`, `OUTBOUND_TIMEZONE`).
+**Multiple campaigns run concurrently.** Each `running` campaign is ticked independently with its own calling window, budget, and `max_concurrent`; active-call counts are **scoped per campaign**, so one campaign can't starve another. Total simultaneous calls = the sum of every running campaign's `max_concurrent` — mind your Vapi/Twilio account concurrency limit (there is no global cap).
 
-### Assign a brand (caller ID + voice + compliance + timezone)
+### The worker's guardrails (every 15 s tick)
 
-In the **Campaign controls** card, set the campaign's **"Brand agent + caller ID"** dropdown. The dialer then routes that campaign's calls to the brand's **own assistant + local caller-ID number**, and the campaign's calling-hours `timezone` is set from the brand. Without a brand, the campaign uses the generic env-default assistant + number. Full detail: **[brands.md](brands.md)**.
+Order of checks per lead (`placeCall` in `src/outbound/dialer.ts`):
+
+1. Dialable phone present, lead not `dnc`.
+2. **In-flight guard** — skip if the lead already has a live call (prevents tick + call-now double-dials).
+3. **DNC suppression, fail-closed** — a listing blocks and marks the lead; an infrastructure lookup *error* blocks the dial without mislabeling the lead.
+4. **Calling window in the lead's own timezone** — `timezoneForState(lead.state)`, falling back to the campaign tz.
+5. **Per-number frequency cap** — max `MAX_CALLS_PER_NUMBER_PER_DAY` per phone per rolling 24 h (sets a cooldown so it isn't rechecked every tick).
+6. Brand routing (assistant + caller ID), then dial via Vapi with the lead's `variableValues`.
+
+Around the loop: leads are picked highest `lead_score` first among retryable dispositions (`new/queued/no_answer/voicemail`) under the attempt cap and past their `next_attempt_after` backoff (`RETRY_BACKOFF_MINUTES`); a **re-entrancy guard** stops overlapping ticks; a **stale-call sweeper** closes any call stuck live >15 min (`ended_reason='stale-timeout'`) and returns its lead to a retryable state — a missed end-of-call webhook can't pin a concurrency slot or strand a lead; and **systemic dial errors** (daily caps, billing, concurrency limits) auto-pause the campaign instead of burning the whole lead list. The worker resumes automatically after a redeploy if a campaign is still `running`.
 
 ---
 
@@ -56,7 +68,7 @@ The agent's job is to **lead with value**: tell the prospect, accurately, what t
 
 ### (a) The verified status is spoken first
 
-Each call injects the building's real compliance status into the prompt via Vapi `variableValues` (computed in `src/outbound/dialer.ts` → `variableValuesFor`): `{{humanProblem}}` (e.g. "an overdue State elevator inspection"), `{{lastInspectionDate}}`, `{{certStatus}}` (e.g. "the certificate of operation on file expired on 2025-05-02"), plus `{{buildingName}}`/`{{address}}`/`{{city}}`/`{{oemMatch}}`. The agent opens with this — accurate, from public records. `{{violationCodes}}` is only referenced when non-empty (i.e. once you have per-building citations).
+Each call injects the building's real compliance status into the prompt via Vapi `variableValues` (computed in `src/outbound/dialer.ts` → `variableValuesFor`): `{{humanProblem}}` (e.g. "an overdue State elevator inspection"), `{{lastInspectionDate}}`, `{{certStatus}}`, plus `{{buildingName}}`/`{{address}}`/`{{city}}`/`{{oemMatch}}`. The **deterministic opener** discloses the AI + recorded line and leads with this verified status. `{{violationCodes}}` is only referenced when non-empty.
 
 ### (b) A verified knowledge base for "what does that mean?"
 
@@ -71,15 +83,22 @@ bun run import-codes scripts/seed/ca_elevator_compliance.csv
 # or without Bun:  npm run import-codes:node -- scripts/seed/ca_elevator_compliance.csv
 ```
 
-Columns (header names are case/space-insensitive, aliases accepted): `code` (required — a topic key or a code), `jurisdiction`, `title`, `plain_summary`, `severity`, `typical_remedy`, `source_url`. Keys are normalized (uppercased; spaces/punctuation → `_`; dots kept) so they match how the agent queries. Upserts on `code`, so editing + re-running is safe.
+Columns (header names are case/space-insensitive, aliases accepted): `code` (required — a topic key or a code), `jurisdiction`, `title`, `plain_summary`, `severity`, `typical_remedy`, `source_url`. Keys are normalized so they match how the agent queries. Upserts on `code`, so editing + re-running is safe.
 
-> ⚠️ **The seed CSV is a DRAFT — Axxiom must review/verify it before live calls** (see `scripts/seed/README.md`). Until the table is seeded, `lookupViolationCode` safely returns "not found → the team will confirm," and the agent still speaks accurately about each lead's own overdue/expired status.
+> ⚠️ **The seed CSV is a DRAFT — Axxiom must review/verify it before live calls** (see `scripts/seed/README.md`). Until the table is seeded, `lookupViolationCode` safely returns "not found → the team will confirm."
 
 ---
 
-## 3. Qualification → sales-ready data
+## 3. The call flow: disclosure → consent → qualification
 
-The agent captures structured qualification fields into real `outbound.lead` columns (not just a free-text note), so the sales team gets clean, actionable data:
+1. **Deterministic opener** (assistant speaks first): discloses the AI + recorded line, then the building's verified status. Stamps `disclosed_at` + a `disclosure` audit event (backfilled at end-of-call if needed).
+2. **`confirmConsent`** the moment the person agrees (or declines) to continue on the recorded line — only an explicit "yes" writes `consent_captured`/`consent_at`. Declines are honored (wrap up / opt out).
+3. **`qualifyLead`** — only after consent — captures the sales-ready fields below.
+4. **`recordDisposition`** near the end sets the final outcome; `optOut` at any point suppresses the number.
+
+If voicemail is reached (with `ENABLE_VOICEMAIL_DETECTION=true`), a short **AI-disclosed voicemail message** is left instead of the pitch. Keep detection **off** while testing conversations (false positives hang up on live humans), **on** for real campaigns.
+
+### Qualification → sales-ready data
 
 | Field | Set by | Meaning |
 |-------|--------|---------|
@@ -87,10 +106,11 @@ The agent captures structured qualification fields into real `outbound.lead` col
 | `current_provider` | `qualifyLead` | Who services the elevator today |
 | `timeline` | `qualifyLead` | Rough timeline in their words |
 | `callback_name` / `callback_phone` / `callback_email` | `qualifyLead` | Best contact for follow-up |
+| `consent_captured` / `consent_at` (call) | `confirmConsent` | Explicit recorded-line consent |
 | `disposition` | `recordDisposition` | Final outcome (below) |
 | `qualified_at` | `recordDisposition` | Timestamp when the lead became `qualified` |
 
-In the dashboard, click a lead row to expand its qualification detail. Export sales-ready lists (the export includes all the columns above plus building/contact/region/violation context):
+In the dashboard, click a lead row to expand its qualification detail. Export sales-ready lists:
 
 ```
 GET /outbound/export?disposition=qualified&format=xlsx&campaignId=<id>
@@ -107,34 +127,64 @@ GET /outbound/export?disposition=qualified,needs_followup&format=csv     # sales
 | `needs_followup` | Interested but reach someone else / call back |
 | `not_interested` | Not now, keep on file |
 | `remove` | Wrong number / no longer involved |
-| `no_answer`, `voicemail` | Retryable (subject to attempt cap) |
+| `no_answer`, `voicemail` | Retryable (attempt cap + backoff) |
 | `bad_number` | Toll-free-only / missing phone (flagged at import) |
-| `dnc` | Opted out — added to the suppression list, never dialed again |
+| `dnc` | Opted out — suppressed, never dialed again |
 
-If a call ends without the agent setting a disposition, the handler infers one from how the call ended (transferred → `qualified`, voicemail → `voicemail`, no-answer/busy → `no_answer`, else `needs_followup`).
+If a call ends without the agent setting a disposition, the handler infers one from how the call ended (transferred → `qualified`, voicemail → `voicemail`, no-answer/busy → `no_answer`, else `needs_followup`). Every ended call also records **`ended_by`** (customer/agent/operator/system, derived from Vapi's `endedReason`) — shown as a badge in Recent calls.
 
 ---
 
-## 4. Test the agent
+## 4. Monitor it live
 
-To hear the live outbound agent before (or during) a campaign, use the **"Test the agent"** card at the top of the dashboard: enter any phone number (plus optional contact / building / problem / violation-code fields to shape the script) and click **Place test call**. The call streams into the live monitor like any other.
+The console (login required) is built for running several campaigns at once:
 
-- Backend: `POST /outbound/test-call` with `{ phone, name?, buildingName?, address?, city?, problemType?, violationCodes? }`.
-- It dials the **real** outbound assistant with no lead row required (the `call` row has `lead_id = null`, `metadata.kind = "test"`).
-- It still honors the DNC suppression list.
+- **Live campaigns** — one card per `running` campaign: dialed-this-run vs. budget, active calls, qualified count (Realtime + polling).
+- **Live monitor** — in-flight calls with streaming transcripts (Realtime on `call` + `call_event`); an **End call** button drops a stuck/bad call via the per-call control URL (`ended_by='operator'`).
+- **Recent calls** — recording, summary, paginated transcript, `ended_by` badge.
+- **Campaign controls** — start/pause with **Calls this run** + concurrency, rename/re-region, and the optional **Brand agent + caller ID** override ("Auto" = resolve from leads).
+- **Stats bar / leads table / export** — disposition breakdown, filter/search + per-lead "call now", CSV/XLSX export presets.
+
+## 5. Measure it — `/analytics`
+
+The analytics page reads pre-aggregated SQL views (`GET /outbound/analytics`, `?days=7/30/90`) and shows: KPI row (leads/contacted/qualified/dials), **cost & reach** (total / per-call / per-qualified cost, connect rate, Vapi vs telephony split), the funnel, daily trends, **call quality** (connect rate, avg talk time, sentiment, transfer/no-answer, **who ended the call**, failed/stale), attempts-per-lead, **per-brand (≈ per-caller-ID) health**, and the **compliance audit card** (disclosure/consent coverage + recent-call audit table). A red banner surfaces unresolved dead-lettered writes (`failed_op`) — replay them with `POST /outbound/failed-ops/replay`.
+
+**Telephony costs come from Twilio, not Vapi.** Vapi owns the conversation (transcript, recording, disposition, its own `vapi_cost`); **Twilio owns the authoritative carrier cost/status/answered-by**, reconciled onto call rows by Twilio Call SID — automatically every ~5 min while the worker runs, or on demand via the **"↻ Twilio costs"** button (`POST /outbound/twilio/sync`). Needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` on the server, else telephony cost stays empty.
+
+## 6. Improve it — AI campaign insights (human-gated self-learning)
+
+`src/ai/campaignInsights.ts` reviews a campaign's recent transcripts + outcomes and writes a **`campaign_insight`** row containing (a) an improvement report (what's working, where calls die, objections) and (b) a **proposed improved system prompt** for that brand.
+
+- **Triggers:** automatically after every `INSIGHT_EVERY_N_CALLS` ended calls (30-min cooldown, worker-throttled), or on demand — dashboard **Insights panel** / `POST /outbound/campaign/:id/analyze`. Needs `ANTHROPIC_API_KEY` and ≥3 transcripts.
+- **Human-gated apply:** review the report + diff in the Insights panel, then **Approve** (`POST /outbound/insights/:id/approve`) to PATCH the live Vapi assistant's prompt and persist a `brand_prompt:<slug>` override in `app_setting` — re-runs of `create-brand-assistants` and redeploys keep the approved prompt. **Reject** discards it.
+- **Compliance guardrail:** `checkPromptGuardrail` **blocks** approval of any prompt missing the AI-disclosure, recorded-line, consent, or opt-out language — self-learning can't optimize away compliance.
+
+## 7. Test the agent
+
+Use the **"Test the agent"** card: enter any phone number (plus optional contact/building/problem fields and a **brand** to test that brand's assistant + caller ID) and place the call; it streams into the live monitor like any other.
+
+- Backend: `POST /outbound/test-call` `{ phone, name?, buildingName?, address?, city?, problemType?, violationCodes?, brand? }`.
+- No lead row required (`lead_id = null`, `metadata.kind = "test"`); still honors DNC.
+- Per-brand smoke test before a real campaign: one test call per brand — confirm the disclosure plays, `confirmConsent` fires on your "yes", and the caller ID shown is the brand's Twilio number (for `ameritex`, TX vs CA numbers by lead state).
 
 > **Compliance:** only test against numbers you are authorized to call.
+
+## 8. Data lifecycle
+
+- **Retention:** `POST /outbound/retention/purge` nulls call content (transcript/recording/summary/raw + event payloads) older than `PII_RETAIN_DAYS` (default 90); metrics and dispositions are kept.
+- **DSAR / right-to-erasure:** `POST /outbound/dsar/delete` `{ phone }` removes all lead + call data for that number, keeping **only** the DNC suppression entry so they're never re-dialed.
+- Lead workbooks live in `data/` — gitignored + dockerignored, never committed.
 
 ---
 
 ## Compliance guardrails (enforced in code, not just the prompt)
 
-These live in `src/outbound/dialer.ts` and the handlers, so they apply to the worker, "call now," and test calls:
+These live in `src/outbound/dialer.ts` + `src/outbound/handlers.ts`, so they apply to the worker, "call now," and test calls:
 
-- **Calling window** (TCPA 8am–9pm in the campaign's timezone — set from the brand) — the worker won't dial outside it. "Call now" and test calls bypass the *window* (operator discretion) but **not** DNC.
-- **All-party consent** — every brand agent requires explicit recorded-line consent before qualifying (safest posture; see [compliance.md](compliance.md)).
-- **DNC suppression** — `outbound.dnc_suppression` is checked before every dial; `optOut` adds the number and marks the lead `dnc`.
-- **Prompt guardrails** — the agent stays on scope, resists manipulation/prompt-injection, gives no legal/financial advice, never collects sensitive PII, and disengages on hostility.
-- **Append-only audit** — every status change, transcript line, tool call, consent moment, and code lookup is written to `outbound.call_event`.
+- **Calling window** — TCPA 8am–9pm **in the lead's own timezone** (state → tz map, campaign tz fallback). "Call now"/test calls bypass the *window* (operator discretion) but **not** DNC.
+- **Explicit consent** — deterministic AI/recorded-line opener, then `confirmConsent` before qualifying (all-party posture on every brand).
+- **DNC suppression** — checked fail-closed before every dial; `optOut` suppresses + marks the lead.
+- **Frequency + attempts** — per-number daily cap, per-lead attempt cap, retry backoff.
+- **Append-only audit** — every status change, transcript line, tool call, disclosure, and consent moment in `outbound.call_event`; coverage on the `/analytics` compliance card.
 
-See [compliance.md](compliance.md) for the per-brand checklist, guardrails, and open legal items.
+See [compliance.md](compliance.md) for the full control map and the open legal items.

@@ -10,7 +10,7 @@ Two agents share one Hono webhook service:
 - **Inbound** — answers every call 24/7, triages new leads vs. existing customers, books site surveys, transfers to a human (incl. a safety handoff for trapped/injured callers). Scope is inquiries + leads, **not** emergency dispatch.
 - **Outbound** — compliant qualification campaign that dials CA elevator-violation leads, qualifies/dispositions them, monitored from a Next.js dashboard in `web/`. Lives in a separate Supabase `outbound` schema.
 
-See `docs/` for the full guides (`docs/README.md` is the index: setup, inbound, outbound campaigns, API reference, database, compliance) and `README.md` for the quick tour. This file is the operational map for working in the code.
+See `docs/` for the full guides (`docs/README.md` is the index: overview, setup, brands, voices, inbound, outbound campaigns, API reference, database, compliance) and `README.md` for the quick tour. `docs/overview.md` is the plain-English executive summary. This file is the operational map for working in the code.
 
 ## Runtime & commands
 
@@ -26,8 +26,10 @@ bun run create-assistant            # create/update inbound Vapi assistant
 bun run create-outbound-assistant   # create/update the generic/fallback outbound assistant
 bun run create-brand-assistants     # create/update one Vapi assistant per brand (brands.ts)
 bun run create-convai-agent         # ElevenLabs Conversational AI evaluation POC
+bun run import-twilio-numbers       # register Twilio DIDs in Vapi as caller IDs (--brand/--number/--list)
 bun run import-leads <f> --region X  # seed outbound.lead for a region (one campaign per region)
 bun run import-codes <f>             # seed outbound.code_reference (codes + compliance topics)
+bun run check-db                    # diagnostic: outbound schema reachable via service role
 
 # Node fallbacks (no Bun): npm install, then *:node variants
 npm run import-leads:node

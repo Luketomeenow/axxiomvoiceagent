@@ -13,6 +13,7 @@ The assistant config (`src/assistant/config.ts`) is pushed to Vapi by `bun run c
 
 ## What the agent does
 
+0. **Discloses up front.** The greeting is a fixed first message (`buildFirstMessage` in `systemPrompt.ts`): *"Thanks for calling …, this is …, a virtual AI assistant — just so you know, this call is recorded."* — the AI + recording notice precedes any conversation (AB 2905 / CIPA posture, matching the outbound agents).
 1. **Safety check first (highest priority).** If anyone is *trapped* or *injured*, it stops everything and calls `transferCall` immediately; if the transfer fails it tells the caller to do `EMERGENCY_INSTRUCTION` (default: "hang up and dial 911"). It never qualifies a lead during an emergency.
 2. **Identifies the caller** — new prospect vs. existing customer (calls `lookupContact` to pull a known customer's record; the caller's number is passed in automatically).
 3. **New prospect → qualify, then book** — gathers name, callback number, building name/address, elevator count, the issue, and decision-maker status, then calls `bookSurvey` to create the lead and book a site survey.
@@ -37,7 +38,7 @@ Full parameter schemas are in [api-reference.md](api-reference.md).
 
 ## Call log
 
-Every completed call writes a row to `ax_voice_call` in Supabase (`src/supabase/voiceCall.ts`), mirrored to Fabric. If `ENABLE_TRANSCRIPT_ANALYSIS=true` (and `ANTHROPIC_API_KEY` is set), a post-call Claude pass adds sentiment / objections / next-best-action (`src/ai/analyzeTranscript.ts`).
+Every completed call writes a row to `ax_voice_call` in Supabase (`src/supabase/voiceCall.ts`), mirrored to Fabric. If `ENABLE_TRANSCRIPT_ANALYSIS=true` (and `ANTHROPIC_API_KEY` is set), a post-call Claude pass adds sentiment / objections / next-best-action (`src/ai/analyzeTranscript.ts`). The table is **RLS-locked to the service role** (no anon/authenticated reads — it holds full transcripts + caller numbers). The handler also tags the GHL contact with the outcome (`voice-booked` / `voice-transferred` / `voice-handled`).
 
 ## Configuration knobs
 
@@ -45,6 +46,7 @@ The prompt is templated from business-config env vars so it stays generic: `COMP
 
 ## Production notes
 
+- `/vapi/webhook` **requires `VAPI_SERVER_SECRET`** (fails closed with 503 when unset) — the create script writes the secret into the assistant's server config.
 - Per-call state is in-memory (single instance). Move to Supabase/Redis before scaling out.
 - Confirm GHL response shapes (search, free-slots, appointments) against the live account — marked `TODO` in `src/ghl/api.ts`.
-- Recording-consent + AI disclosure for inbound live in the prompt; revisit with counsel as needed.
+- The AI/recording disclosure is deterministic (fixed greeting), not model-generated; keep it in sync with the recording posture in `config.ts`. Wording is drafted — confirm with counsel.

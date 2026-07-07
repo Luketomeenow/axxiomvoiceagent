@@ -360,7 +360,9 @@ select
   c.brand,
   c.status,
   count(l.id)                                                                  as total_leads,
-  count(l.id) filter (where l.disposition not in ('new', 'queued'))            as contacted,
+  -- "contacted" = a real dial outcome. Excludes bad_number (junk flagged at
+  -- import, never dialed) and calling (in flight) so the funnel isn't inflated.
+  count(l.id) filter (where l.disposition not in ('new', 'queued', 'bad_number', 'calling')) as contacted,
   count(l.id) filter (where l.disposition = 'qualified')                       as qualified,
   count(l.id) filter (where l.disposition = 'needs_followup')                  as needs_followup,
   count(l.id) filter (where l.disposition = 'not_interested')                  as not_interested,
@@ -388,21 +390,10 @@ from outbound.call
 where started_at is not null
 group by 1, 2;
 
--- Call quality, by campaign + brand.
-create or replace view outbound.v_call_quality with (security_invoker = on) as
-select
-  campaign_id,
-  brand,
-  count(*)                                                                     as calls,
-  count(*) filter (where status = 'ended')                                    as completed,
-  round(avg(duration_seconds) filter (where duration_seconds is not null), 1) as avg_duration_seconds,
-  round(avg(sentiment_score) filter (where sentiment_score is not null), 3)   as avg_sentiment,
-  count(*) filter (where transferred_to_human)                                as transferred,
-  count(*) filter (where outcome = 'voicemail')                               as voicemail,
-  count(*) filter (where outcome = 'no_answer')                               as no_answer,
-  count(*) filter (where outcome = 'failed')                                  as failed
-from outbound.call
-group by campaign_id, brand;
+-- Call quality (by campaign + brand) is defined ONCE, near the end of this file
+-- (it needs the ended_by/cost columns added below). NOTE: it must NOT also be
+-- defined here — `create or replace view` cannot change existing column
+-- names/positions (42P16), so two differing definitions break the whole run.
 
 -- Attempts-to-outcome distribution: how many dials it takes per lead.
 create or replace view outbound.v_attempt_distribution with (security_invoker = on) as
@@ -435,9 +426,9 @@ select
   exists (select 1 from outbound.call_event e where e.call_id = c.id and e.type = 'consent')    as consent_event
 from outbound.call c;
 
+-- (v_call_quality is granted where it is created, near the end of this file.)
 grant select on outbound.v_campaign_funnel, outbound.v_daily_metrics,
-               outbound.v_call_quality, outbound.v_attempt_distribution,
-               outbound.v_compliance_audit
+               outbound.v_attempt_distribution, outbound.v_compliance_audit
   to authenticated, service_role;
 
 -- ===========================================================================
@@ -467,9 +458,9 @@ end $$;
 -- 2) Revoke anon's table + view read grants (existing objects + future defaults).
 revoke select on all tables in schema outbound from anon;
 alter default privileges in schema outbound revoke select on tables from anon;
+-- (v_call_quality is revoked where it is created, near the end of this file.)
 revoke select on outbound.v_campaign_funnel, outbound.v_daily_metrics,
-               outbound.v_call_quality, outbound.v_attempt_distribution,
-               outbound.v_compliance_audit
+               outbound.v_attempt_distribution, outbound.v_compliance_audit
   from anon;
 
 -- ===========================================================================
@@ -525,10 +516,12 @@ alter table outbound.call add column if not exists provider_status  text;      -
 alter table outbound.call add column if not exists answered_by      text;      -- Twilio AMD: human | machine_* | unknown
 create index if not exists outbound_call_provider_idx on outbound.call (provider_call_id);
 
--- Recreate v_call_quality with connect/who-ended breakdown + cost. Placed AFTER
--- the columns above exist, so it supersedes the base definition earlier in this
--- file (create-or-replace wins on the full top-to-bottom run).
-create or replace view outbound.v_call_quality with (security_invoker = on) as
+-- v_call_quality with connect/who-ended breakdown + cost. Placed AFTER the
+-- columns above exist. Dropped first because an older deployed shape has
+-- different column positions and create-or-replace can't rename them (42P16);
+-- dropping a view loses no data and the grant is re-applied just below.
+drop view if exists outbound.v_call_quality;
+create view outbound.v_call_quality with (security_invoker = on) as
 select
   campaign_id,
   brand,
@@ -555,3 +548,4 @@ from outbound.call
 group by campaign_id, brand;
 
 grant select on outbound.v_call_quality to authenticated, service_role;
+revoke select on outbound.v_call_quality from anon;
