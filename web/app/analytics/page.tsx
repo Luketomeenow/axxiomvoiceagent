@@ -257,40 +257,50 @@ export default function AnalyticsPage() {
         </section>
 
         <div className="grid gap-5 lg:grid-cols-2">
-          {/* Reach breakdown — the core lever: are we reaching PEOPLE or machines? */}
+          {/* Reach breakdown. IMPORTANT: "connected" = a call the agent talked on
+              (ended_by customer/agent). It does NOT distinguish a live person from
+              a machine until voicemail detection is ON + the ivr disposition ships
+              — so we label it "Answered" and warn when the machine split is missing. */}
           <section className="card card-pad">
             <div className="mb-1 flex items-center justify-between">
               <h2 className="section-title">Who we reached</h2>
               {quality && quality.calls > 0 && (
-                <span className="text-xs text-emerald-300">
-                  {pct(quality.connected, quality.calls)}% reached a person
-                </span>
+                <span className="text-xs text-emerald-300">{pct(quality.connected, quality.calls)}% answered</span>
               )}
             </div>
             <p className="mb-3 text-xs text-slate-500">
-              Most cold dials hit a machine or switchboard. This is the number to move — more people reached = more
-              qualified leads.
+              “Answered” = the call connected and the agent spoke. Getting more of those to a real decision-maker (vs. a
+              machine or switchboard) is the lever for qualified leads.
             </p>
             {quality && (
               <BarList
                 items={[
-                  { label: "Reached a person", value: quality.connected, accent: "emerald" },
+                  { label: "Answered (incl. machines)", value: quality.connected, accent: "emerald" },
                   { label: "Voicemail", value: quality.voicemail, accent: "indigo" },
                   { label: "Automated menu (IVR)", value: quality.ivr, accent: "amber" },
                   { label: "No answer", value: quality.noAnswer, accent: "slate" },
-                  { label: "Failed to place", value: quality.failed, accent: "rose" },
+                  { label: "Failed to place (dial error)", value: quality.failed, accent: "rose" },
                 ]}
               />
             )}
-            {quality && quality.calls > 0 && (
-              <p className="mt-3 text-xs text-slate-400">
-                Machines / switchboards:{" "}
-                <span className="font-semibold text-slate-200">
-                  {pct(quality.voicemail + quality.ivr + quality.noAnswer, quality.calls)}%
-                </span>{" "}
-                of dials. Lower this with better direct-dial numbers, IVR navigation, and best-time calling.
-              </p>
-            )}
+            {quality &&
+              quality.calls > 0 &&
+              (quality.voicemail + quality.ivr === 0 ? (
+                <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                  ⚠ “Answered” still includes answering machines &amp; phone-tree menus — voicemail/IVR detection isn’t
+                  tagging them yet, so this over-counts real people. Turn on{" "}
+                  <span className="font-mono">ENABLE_VOICEMAIL_DETECTION</span> and deploy the new IVR handling to split
+                  people from machines. (Recent transcripts suggest ~half of “answered” calls are actually machines.)
+                </p>
+              ) : (
+                <p className="mt-3 text-xs text-slate-400">
+                  Machines (voicemail + IVR):{" "}
+                  <span className="font-semibold text-slate-200">
+                    {pct(quality.voicemail + quality.ivr, quality.connected + quality.voicemail + quality.ivr)}%
+                  </span>{" "}
+                  of answered calls. Lower it with direct-dial numbers, IVR navigation, and best-time calling.
+                </p>
+              ))}
           </section>
 
           {/* Best time to call — connect rate by hour (Pacific), from v_call_hourly */}
