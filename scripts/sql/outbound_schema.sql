@@ -535,6 +535,7 @@ select
   count(*) filter (where transferred_to_human)                                as transferred,
   count(*) filter (where outcome = 'voicemail')                               as voicemail,
   count(*) filter (where outcome = 'no_answer')                               as no_answer,
+  count(*) filter (where outcome = 'ivr')                                     as ivr,
   count(*) filter (where outcome = 'failed')                                  as failed,
   count(*) filter (where ended_reason = 'stale-timeout')                      as stale,
   count(*) filter (where ended_by = 'customer')                               as ended_customer,
@@ -549,3 +550,20 @@ group by campaign_id, brand;
 
 grant select on outbound.v_call_quality to authenticated, service_role;
 revoke select on outbound.v_call_quality from anon;
+
+-- Connect/qualify rate by hour-of-day (Pacific) — surfaces the best hours to
+-- dial so retry timing + campaign windows can be tuned to when people answer.
+create or replace view outbound.v_call_hourly with (security_invoker = on) as
+select
+  campaign_id,
+  extract(hour from (started_at at time zone 'America/Los_Angeles'))::int      as hour_pt,
+  count(*)                                                                     as calls,
+  count(*) filter (where ended_by in ('customer', 'agent') or transferred_to_human) as connected,
+  count(*) filter (where disposition = 'qualified')                           as qualified,
+  count(*) filter (where disposition in ('voicemail', 'ivr'))                 as reached_machine
+from outbound.call
+where started_at is not null
+group by campaign_id, hour_pt;
+
+grant select on outbound.v_call_hourly to authenticated, service_role;
+revoke select on outbound.v_call_hourly from anon;

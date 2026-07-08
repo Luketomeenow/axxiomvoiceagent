@@ -111,6 +111,7 @@ export interface QualityRow {
   transferred: number;
   voicemail: number;
   no_answer: number;
+  ivr: number;
   failed: number;
   stale: number;
   ended_customer: number;
@@ -141,11 +142,30 @@ export interface AttemptRow {
   qualified: number;
 }
 
+export interface HourlyRow {
+  campaign_id: string | null;
+  hour_pt: number; // 0-23, Pacific
+  calls: number;
+  connected: number;
+  qualified: number;
+  reached_machine: number;
+}
+
+export interface AnalyticsSummary {
+  totalCost: number;
+  qualified: number;
+  costPerQualified: number | null;
+  connectRate: number | null;
+  reachedMachine: number;
+}
+
 export interface AnalyticsResponse {
   funnel: FunnelRow[];
   quality: QualityRow[];
   daily: DailyRow[];
   attempts: AttemptRow[];
+  hourly: HourlyRow[];
+  summary?: AnalyticsSummary;
   unresolvedFailures: number;
   days: number;
   error?: string;

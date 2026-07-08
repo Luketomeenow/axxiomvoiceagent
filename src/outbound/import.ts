@@ -12,6 +12,7 @@ import * as XLSX from "xlsx";
 import { db } from "./db.ts";
 import { autoAssignCampaignBrand } from "./dialer.ts";
 import { chooseDialNumber, toE164 } from "./phone.ts";
+import { normalizeStateCode } from "./timezone.ts";
 
 export interface SheetInfo {
   name: string;
@@ -128,7 +129,9 @@ export async function importLeads(opts: {
       building_name: str(r.building_name),
       address: str(r.address),
       city: str(r.city),
-      state: str(r.state),
+      // Normalize county-suffixed codes ("FLCO" → "FL") so calling-window tz +
+      // brand routing resolve correctly.
+      state: normalizeStateCode(str(r.state)),
       zip: str(r.zip),
       market: str(r.market),
       region: region ?? str(r.region) ?? str(r.market),

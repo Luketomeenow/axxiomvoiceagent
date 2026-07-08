@@ -102,8 +102,9 @@ export async function autoAssignCampaignBrand(campaignId: string | null): Promis
 
 const VAPI_API = "https://api.vapi.ai";
 
-// Leads in these states are still callable (subject to attempt cap).
-const RETRYABLE_DISPOSITIONS = ["new", "queued", "no_answer", "voicemail"];
+// Leads in these states are still callable (subject to attempt cap). ivr =
+// reached an automated menu with no path to a human; retried like voicemail.
+const RETRYABLE_DISPOSITIONS = ["new", "queued", "no_answer", "voicemail", "ivr"];
 
 export interface DialResult {
   ok: boolean;
@@ -152,10 +153,11 @@ function humanProblem(lead: LeadRow): string {
   return overdue ? `an overdue ${type}` : `an ${type} on file`;
 }
 
-/** Verified cert status sentence from cert_expiry_date vs. today, or "" if unknown. */
+/** Verified cert status sentence from cert_expiry_date vs. today. Never returns
+ *  "" — an empty clause left a dangling ". ." in the prompt's status sentence. */
 function certStatus(lead: LeadRow): string {
   const raw = (lead.cert_expiry_date || "").trim();
-  if (!raw) return "";
+  if (!raw) return "the certificate of operation status isn't listed in the record";
   const when = new Date(raw);
   if (Number.isNaN(when.getTime())) return `the certificate of operation on file shows ${raw}`;
   return when.getTime() < Date.now()
@@ -163,11 +165,19 @@ function certStatus(lead: LeadRow): string {
     : `the certificate of operation on file is set to expire on ${raw}`;
 }
 
+/** A field only counts if it has an actual letter/number — guards against
+ *  placeholder junk ("-", ".", "N/A", zero-width) that would voice as a blank
+ *  in the opener ("the elevator at ___ is showing…"). */
+function meaningful(s: string | null | undefined): string | undefined {
+  const t = (s ?? "").trim();
+  return /[a-z0-9]/i.test(t) ? t : undefined;
+}
+
 /** Variable values injected into the assistant prompt + first message per call. */
 function variableValuesFor(lead: LeadRow): Record<string, string> {
   return {
-    contactName: lead.contact_name ?? "there",
-    buildingName: lead.building_name || lead.address || "your building",
+    contactName: meaningful(lead.contact_name) ?? "there",
+    buildingName: meaningful(lead.building_name) ?? meaningful(lead.address) ?? "your building",
     address: lead.address ?? "",
     city: lead.city ?? "",
     oemMatch: lead.oem_match ?? "unknown",
@@ -681,7 +691,11 @@ async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
     .in("disposition", RETRYABLE_DISPOSITIONS)
     .lt("attempts", maxAttempts)
     .or(`next_attempt_after.is.null,next_attempt_after.lte.${nowIso}`)
-    .order("lead_score", { ascending: false })
+    // Best leads first. `nullsFirst: false` is critical — PostgREST defaults to
+    // NULLS FIRST on descending, which would float unscored leads ABOVE high
+    // scorers. Tiebreak by fewest attempts so fresh leads beat oft-retried ones.
+    .order("lead_score", { ascending: false, nullsFirst: false })
+    .order("attempts", { ascending: true })
     .limit(slots)
     .returns<LeadRow[]>();
 

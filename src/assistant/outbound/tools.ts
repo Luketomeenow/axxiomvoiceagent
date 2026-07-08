@@ -71,7 +71,8 @@ export const qualifyLeadTool = {
         bestCallbackName: { type: "string", description: "Name of the right contact, if it's not this person." },
         bestCallbackPhone: { type: "string", description: "Best callback number, if provided." },
         bestCallbackEmail: { type: "string", description: "Email, if provided." },
-        timeline: { type: "string", description: "Rough timeline in plain words, e.g. 'next month'." },
+        bestCallbackTime: { type: "string", description: "Best day/time to reach them, in plain words, e.g. 'Tuesday after 2pm'." },
+        timeline: { type: "string", description: "Rough timeline for the work/survey in plain words, e.g. 'next month'." },
         notes: { type: "string", description: "Any other useful context from the conversation." },
       },
       required: ["interested"],
@@ -90,9 +91,9 @@ export const recordDispositionTool = {
       properties: {
         disposition: {
           type: "string",
-          enum: ["qualified", "needs_followup", "not_interested", "remove"],
+          enum: ["qualified", "needs_followup", "not_interested", "remove", "voicemail", "ivr"],
           description:
-            "qualified = interested, wants survey/follow-up; needs_followup = interested but reach someone else or call back; not_interested = not now but keep on file; remove = wrong number / no longer involved / take off the list.",
+            "qualified = interested, wants survey/follow-up; needs_followup = interested but reach someone else or call back; not_interested = not now but keep on file; remove = wrong number / no longer involved / take off the list; voicemail = reached an answering machine; ivr = reached an automated phone menu and couldn't get to a live person. voicemail and ivr are retried automatically later.",
         },
         notes: { type: "string", description: "One-line reason for the disposition." },
       },
@@ -139,6 +140,15 @@ export function endCallTool() {
   return { type: "endCall" as const };
 }
 
+/**
+ * Vapi built-in DTMF tool — lets the agent send keypad tones to navigate an
+ * automated phone tree (e.g. press 0 for an operator, or dial an extension) so
+ * it can reach a live person instead of monologuing at a menu.
+ */
+export function dtmfTool() {
+  return { type: "dtmf" as const };
+}
+
 /** All outbound tools. transferCall is only added when a transfer number is available. */
 export function buildOutboundTools(transferNumber: string = env.transferPhoneNumber): unknown[] {
   const tools: unknown[] = [
@@ -148,6 +158,7 @@ export function buildOutboundTools(transferNumber: string = env.transferPhoneNum
     optOutTool,
     lookupViolationCodeTool,
     endCallTool(),
+    dtmfTool(),
   ];
   if (transferNumber) tools.push(transferToHumanTool(transferNumber));
   return tools;

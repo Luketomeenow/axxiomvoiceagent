@@ -120,24 +120,49 @@ outbound.get("/outbound/analytics", async (c) => {
   const qualityQ = db().from("v_call_quality").select("*");
   const dailyQ = db().from("v_daily_metrics").select("*").gte("day", cutoff).order("day", { ascending: true });
   const attemptsQ = db().from("v_attempt_distribution").select("*").order("attempts", { ascending: true });
+  const hourlyQ = db().from("v_call_hourly").select("*").order("hour_pt", { ascending: true });
 
-  const [funnel, quality, daily, attempts, deadLetters] = await Promise.all([
+  const [funnel, quality, daily, attempts, hourly, deadLetters] = await Promise.all([
     campaignId ? funnelQ.eq("campaign_id", campaignId) : funnelQ,
     campaignId ? qualityQ.eq("campaign_id", campaignId) : qualityQ,
     campaignId ? dailyQ.eq("campaign_id", campaignId) : dailyQ,
     campaignId ? attemptsQ.eq("campaign_id", campaignId) : attemptsQ,
+    campaignId ? hourlyQ.eq("campaign_id", campaignId) : hourlyQ,
     db().from("failed_op").select("id", { count: "exact", head: true }).eq("resolved", false),
   ]);
 
   const firstError = funnel.error || quality.error || daily.error || attempts.error;
   if (firstError) return c.json({ error: firstError.message }, 500);
+  // v_call_hourly is newer — if the migration hasn't been re-run yet, don't 500
+  // the whole page; just return an empty series.
+  const hourlyRows = hourly.error ? [] : hourly.data ?? [];
+
+  // Reconcile the two view grains into single headline numbers: cost lives in
+  // v_call_quality (campaign×brand), qualified in v_campaign_funnel (campaign).
+  const q = quality.data ?? [];
+  const f = funnel.data ?? [];
+  const sum = <T,>(rows: T[], pick: (r: T) => number | null | undefined) =>
+    rows.reduce((a, r) => a + (Number(pick(r)) || 0), 0);
+  const totalCost = sum(q, (r: any) => r.total_cost);
+  const qualified = sum(f, (r: any) => r.qualified);
+  const calls = sum(q, (r: any) => r.calls);
+  const connected = sum(q, (r: any) => r.connected);
+  const reachedMachine = sum(q, (r: any) => (r.voicemail ?? 0) + (r.no_answer ?? 0));
 
   return c.json({
-    funnel: funnel.data ?? [],
-    quality: quality.data ?? [],
+    funnel: f,
+    quality: q,
     daily: daily.data ?? [],
     attempts: attempts.data ?? [],
+    hourly: hourlyRows,
     unresolvedFailures: deadLetters.count ?? 0,
+    summary: {
+      totalCost: Math.round(totalCost * 100) / 100,
+      qualified,
+      costPerQualified: qualified > 0 ? Math.round((totalCost / qualified) * 100) / 100 : null,
+      connectRate: calls > 0 ? Math.round((connected / calls) * 1000) / 10 : null, // %
+      reachedMachine,
+    },
     days,
   });
 });
