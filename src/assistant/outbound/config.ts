@@ -80,7 +80,11 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
     // Detect voicemail so the dialer can disposition + retry instead of pitching a
     // machine — but it false-positives on live humans, so it's off for testing
     // (ENABLE_VOICEMAIL_DETECTION). `null` clears any existing setting on PATCH.
-    voicemailDetection: env.enableVoicemailDetection ? { provider: "vapi" } : null,
+    // Uses the TWILIO provider (not Vapi's own): Twilio runs AMD, which both
+    // handles the machine AND stamps the Call resource's AnsweredBy — that's what
+    // twilioSync reads into call.answered_by, giving analytics a real human-vs-
+    // machine split. (Vapi's own provider never sets Twilio's AnsweredBy.)
+    voicemailDetection: env.enableVoicemailDetection ? { provider: "twilio" } : null,
     // Discloses the AI (AB 2905) — the live opener isn't heard by a machine, so
     // the voicemail carries its own disclosure.
     voicemailMessage: `Hi, this is an automated AI assistant calling on behalf of ${brand.displayName} about the elevator inspection at your building. We'll try you again, or you can reach our team during business hours. Thank you.`,
