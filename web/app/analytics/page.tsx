@@ -44,6 +44,7 @@ function sumQuality(rows: QualityRow[]) {
   const transferred = sum((r) => r.transferred);
   const voicemail = sum((r) => r.voicemail);
   const noAnswer = sum((r) => r.no_answer);
+  const ivr = sum((r) => r.ivr ?? 0);
   const failed = sum((r) => r.failed);
   const stale = sum((r) => r.stale);
   const endedCustomer = sum((r) => r.ended_customer);
@@ -66,6 +67,7 @@ function sumQuality(rows: QualityRow[]) {
     transferred,
     voicemail,
     noAnswer,
+    ivr,
     failed,
     stale,
     endedCustomer,
@@ -92,6 +94,7 @@ export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [compliance, setCompliance] = useState<ComplianceResponse | null>(null);
+  const [compPage, setCompPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
 
@@ -107,9 +110,10 @@ export default function AnalyticsPage() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    const [a, c] = await Promise.all([api.analytics(campaignId, days), api.compliance(campaignId, 100)]);
+    const [a, c] = await Promise.all([api.analytics(campaignId, days), api.compliance(campaignId, 200)]);
     setData(a);
     setCompliance(c);
+    setCompPage(0);
     setLoading(false);
   }, [campaignId, days]);
 
@@ -148,6 +152,29 @@ export default function AnalyticsPage() {
     }
     return [...m.entries()].map(([brand, v]) => ({ brand, ...v })).sort((a, b) => b.calls - a.calls);
   })();
+
+  // Connect rate by hour-of-day (Pacific) — "when do people actually answer?".
+  // Rolls up the per-campaign hourly rows into one row per hour.
+  const byHour = (() => {
+    const m = new Map<number, { calls: number; connected: number; qualified: number }>();
+    for (const r of data?.hourly ?? []) {
+      const e = m.get(r.hour_pt) ?? { calls: 0, connected: 0, qualified: 0 };
+      e.calls += r.calls;
+      e.connected += r.connected;
+      e.qualified += r.qualified;
+      m.set(r.hour_pt, e);
+    }
+    return [...m.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([hour, v]) => ({ hour, ...v, rate: v.calls ? Math.round((v.connected / v.calls) * 100) : 0 }));
+  })();
+  const hourLabel = (h: number) => `${((h + 11) % 12) + 1}${h < 12 ? "a" : "p"}`;
+
+  // Compliance pagination (keep the audit list compact + scrollable).
+  const COMP_PAGE = 10;
+  const compRows = compliance?.rows ?? [];
+  const compPages = Math.max(1, Math.ceil(compRows.length / COMP_PAGE));
+  const compSlice = compRows.slice(compPage * COMP_PAGE, compPage * COMP_PAGE + COMP_PAGE);
 
   return (
     <div className="min-h-screen">
@@ -228,6 +255,62 @@ export default function AnalyticsPage() {
             </p>
           )}
         </section>
+
+        <div className="grid gap-5 lg:grid-cols-2">
+          {/* Reach breakdown — the core lever: are we reaching PEOPLE or machines? */}
+          <section className="card card-pad">
+            <div className="mb-1 flex items-center justify-between">
+              <h2 className="section-title">Who we reached</h2>
+              {quality && quality.calls > 0 && (
+                <span className="text-xs text-emerald-300">
+                  {pct(quality.connected, quality.calls)}% reached a person
+                </span>
+              )}
+            </div>
+            <p className="mb-3 text-xs text-slate-500">
+              Most cold dials hit a machine or switchboard. This is the number to move — more people reached = more
+              qualified leads.
+            </p>
+            {quality && (
+              <BarList
+                items={[
+                  { label: "Reached a person", value: quality.connected, accent: "emerald" },
+                  { label: "Voicemail", value: quality.voicemail, accent: "indigo" },
+                  { label: "Automated menu (IVR)", value: quality.ivr, accent: "amber" },
+                  { label: "No answer", value: quality.noAnswer, accent: "slate" },
+                  { label: "Failed to place", value: quality.failed, accent: "rose" },
+                ]}
+              />
+            )}
+            {quality && quality.calls > 0 && (
+              <p className="mt-3 text-xs text-slate-400">
+                Machines / switchboards:{" "}
+                <span className="font-semibold text-slate-200">
+                  {pct(quality.voicemail + quality.ivr + quality.noAnswer, quality.calls)}%
+                </span>{" "}
+                of dials. Lower this with better direct-dial numbers, IVR navigation, and best-time calling.
+              </p>
+            )}
+          </section>
+
+          {/* Best time to call — connect rate by hour (Pacific), from v_call_hourly */}
+          <section className="card card-pad">
+            <h2 className="section-title mb-1">Best time to call</h2>
+            <p className="mb-3 text-xs text-slate-500">
+              Connect rate by hour (Pacific) · green = qualified. Dial when people actually answer.
+            </p>
+            {byHour.length > 0 ? (
+              <ColumnChart
+                data={byHour.map((h) => ({ label: hourLabel(h.hour), value: h.rate, sub: h.qualified }))}
+              />
+            ) : (
+              <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-500">
+                No hourly data yet — re-run <span className="font-mono">outbound_schema.sql</span> to add the
+                <span className="font-mono"> v_call_hourly</span> view, then place a few calls.
+              </p>
+            )}
+          </section>
+        </div>
 
         <div className="grid gap-5 lg:grid-cols-2">
           {/* Funnel */}
@@ -344,7 +427,7 @@ export default function AnalyticsPage() {
         <section className="card card-pad">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="section-title">Compliance audit</h2>
-            <span className="text-xs text-slate-500">last {compliance?.rows.length ?? 0} calls</span>
+            <span className="text-xs text-slate-500">{compRows.length} calls in range</span>
           </div>
           <div className="mb-4 flex flex-wrap gap-8">
             <Ring
@@ -358,32 +441,33 @@ export default function AnalyticsPage() {
               accent="emerald"
             />
           </div>
-          <div className="overflow-x-auto">
+          {/* Capped-height + scrollable so a long audit list never dominates the page. */}
+          <div className="max-h-[22rem] overflow-auto rounded-lg border border-white/10">
             <table className="w-full min-w-[640px] text-sm">
-              <thead>
+              <thead className="sticky top-0 z-10 bg-panel/95 backdrop-blur">
                 <tr className="border-b border-white/10 text-left text-xs uppercase tracking-wide text-slate-400">
-                  <th className="py-2 pr-3">When</th>
-                  <th className="py-2 pr-3">Phone</th>
-                  <th className="py-2 pr-3">Brand</th>
-                  <th className="py-2 pr-3">Disclosed</th>
-                  <th className="py-2 pr-3">Consent</th>
-                  <th className="py-2 pr-3">Outcome</th>
+                  <th className="px-3 py-2">When</th>
+                  <th className="px-3 py-2">Phone</th>
+                  <th className="px-3 py-2">Brand</th>
+                  <th className="px-3 py-2">Disclosed</th>
+                  <th className="px-3 py-2">Consent</th>
+                  <th className="px-3 py-2">Outcome</th>
                 </tr>
               </thead>
               <tbody>
-                {(compliance?.rows ?? []).slice(0, 50).map((r) => (
+                {compSlice.map((r) => (
                   <tr key={r.call_id} className="border-b border-white/5">
-                    <td className="py-2 pr-3 text-slate-400">
+                    <td className="px-3 py-2 text-slate-400">
                       {r.started_at ? new Date(r.started_at).toLocaleString() : "—"}
                     </td>
-                    <td className="py-2 pr-3 font-mono text-xs text-slate-300">{r.phone_number ?? "—"}</td>
-                    <td className="py-2 pr-3 text-slate-400">{r.brand ?? "—"}</td>
-                    <td className="py-2 pr-3">{r.disclosure_logged || r.disclosure_event ? <Yes /> : <No />}</td>
-                    <td className="py-2 pr-3">{r.consent_captured || r.consent_event ? <Yes /> : <Dash />}</td>
-                    <td className="py-2 pr-3 text-slate-300">{r.outcome ?? r.disposition ?? "—"}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-slate-300">{r.phone_number ?? "—"}</td>
+                    <td className="px-3 py-2 text-slate-400">{r.brand ?? "—"}</td>
+                    <td className="px-3 py-2">{r.disclosure_logged || r.disclosure_event ? <Yes /> : <No />}</td>
+                    <td className="px-3 py-2">{r.consent_captured || r.consent_event ? <Yes /> : <Dash />}</td>
+                    <td className="px-3 py-2 text-slate-300">{r.outcome ?? r.disposition ?? "—"}</td>
                   </tr>
                 ))}
-                {!compliance?.rows.length && (
+                {!compRows.length && (
                   <tr>
                     <td colSpan={6} className="py-6 text-center text-slate-500">
                       No completed calls in range.
@@ -393,6 +477,32 @@ export default function AnalyticsPage() {
               </tbody>
             </table>
           </div>
+          {compRows.length > COMP_PAGE && (
+            <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+              <span>
+                {compPage * COMP_PAGE + 1}–{Math.min((compPage + 1) * COMP_PAGE, compRows.length)} of {compRows.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setCompPage((p) => Math.max(0, p - 1))}
+                  disabled={compPage === 0}
+                  className="btn btn-ghost btn-xs disabled:opacity-40"
+                >
+                  ← Prev
+                </button>
+                <span className="tabular-nums">
+                  {compPage + 1} / {compPages}
+                </span>
+                <button
+                  onClick={() => setCompPage((p) => Math.min(compPages - 1, p + 1))}
+                  disabled={compPage >= compPages - 1}
+                  className="btn btn-ghost btn-xs disabled:opacity-40"
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          )}
         </section>
 
         {loading && <p className="text-center text-sm text-slate-500">Loading…</p>}

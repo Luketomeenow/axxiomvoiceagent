@@ -535,6 +535,7 @@ select
   count(*) filter (where transferred_to_human)                                as transferred,
   count(*) filter (where outcome = 'voicemail')                               as voicemail,
   count(*) filter (where outcome = 'no_answer')                               as no_answer,
+  count(*) filter (where outcome = 'ivr')                                     as ivr,
   count(*) filter (where outcome = 'failed')                                  as failed,
   count(*) filter (where ended_reason = 'stale-timeout')                      as stale,
   count(*) filter (where ended_by = 'customer')                               as ended_customer,
