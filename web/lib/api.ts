@@ -118,6 +118,15 @@ export interface QualityRow {
   ended_agent: number;
   ended_operator: number;
   ended_system: number;
+  // Twilio AMD (present only when machine detection is on) + carrier status.
+  answered_human?: number;
+  answered_machine?: number;
+  answered_fax?: number;
+  status_completed?: number;
+  status_busy?: number;
+  status_no_answer?: number;
+  status_failed?: number;
+  status_canceled?: number;
   vapi_cost: number | null;
   telephony_cost: number | null;
   total_cost: number | null;

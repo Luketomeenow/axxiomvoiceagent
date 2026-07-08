@@ -542,6 +542,18 @@ select
   count(*) filter (where ended_by = 'agent')                                  as ended_agent,
   count(*) filter (where ended_by = 'operator')                               as ended_operator,
   count(*) filter (where ended_by = 'system')                                 as ended_system,
+  -- Twilio AMD (answered_by) — the authoritative human-vs-machine split. Only
+  -- populated when Twilio machine detection is on (ENABLE_VOICEMAIL_DETECTION +
+  -- the twilio voicemailDetection provider); otherwise these stay 0.
+  count(*) filter (where answered_by = 'human')                               as answered_human,
+  count(*) filter (where answered_by like 'machine%')                         as answered_machine,
+  count(*) filter (where answered_by = 'fax')                                 as answered_fax,
+  -- Twilio carrier call status (authoritative network disposition).
+  count(*) filter (where provider_status = 'completed')                       as status_completed,
+  count(*) filter (where provider_status = 'busy')                            as status_busy,
+  count(*) filter (where provider_status = 'no-answer')                       as status_no_answer,
+  count(*) filter (where provider_status = 'failed')                          as status_failed,
+  count(*) filter (where provider_status = 'canceled')                        as status_canceled,
   round(sum(coalesce(vapi_cost, 0))::numeric, 4)                              as vapi_cost,
   round(sum(coalesce(telephony_cost, 0))::numeric, 4)                         as telephony_cost,
   round(sum(coalesce(vapi_cost, 0) + coalesce(telephony_cost, 0))::numeric, 4) as total_cost
