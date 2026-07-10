@@ -40,6 +40,9 @@ export default function Page() {
             <Link href="/analytics" className="btn btn-ghost btn-xs">
               📊 Analytics
             </Link>
+            <Link href="/docs" className="btn btn-ghost btn-xs">
+              📖 Docs
+            </Link>
             <LiveStatus />
           </div>
         </div>

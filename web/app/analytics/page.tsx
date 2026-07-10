@@ -230,6 +230,9 @@ export default function AnalyticsPage() {
             <button onClick={syncTwilio} disabled={syncing} className="btn btn-ghost btn-xs disabled:opacity-40" title="Pull Twilio call cost + carrier status onto recent calls">
               {syncing ? "Syncing…" : "↻ Twilio costs"}
             </button>
+            <Link href="/docs" className="btn btn-ghost btn-xs">
+              📖 Docs
+            </Link>
             <Link href="/" className="btn btn-ghost btn-xs">
               ← Console
             </Link>
