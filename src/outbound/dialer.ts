@@ -301,6 +301,17 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
     .in("status", ["queued", "ringing", "in-progress"]);
   if ((inFlight ?? 0) > 0) return { ok: false, reason: "lead already has a call in flight" };
 
+  // Per-NUMBER in-flight guard: many lead rows share one dial_phone (one contact
+  // managing several buildings), so the per-lead guard alone let 3 concurrency
+  // slots ring the same person 3 times simultaneously. Applies to manual
+  // call-now too — two live calls to one number is never right.
+  const { count: numberInFlight } = await db()
+    .from("call")
+    .select("id", { count: "exact", head: true })
+    .eq("phone_number", phone)
+    .in("status", ["queued", "ringing", "in-progress"]);
+  if ((numberInFlight ?? 0) > 0) return { ok: false, reason: "number already has a call in flight" };
+
   const sup = await checkSuppression(phone);
   if (sup.suppressed) {
     if (sup.reason === "lookup_error") {
@@ -435,7 +446,18 @@ export async function endCall(callRowId: string): Promise<DialResult> {
         ? "end-call timed out contacting Vapi (call may have already ended)"
         : String(err);
     log.error("End-call failed", { callRowId, err: reason });
-    return { ok: false, reason, callRowId };
+    // A timeout/4xx from the control URL almost always means the call already
+    // ended on Vapi's side (nothing left to route to) — but the row previously
+    // stayed live, pinning the monitor on "ringing" with no way to clear it.
+    // Honor the operator's intent: mark it ended anyway. If the call somehow IS
+    // still live, its end-of-call webhook will overwrite this with the real outcome.
+    await updateCall(callRowId, {
+      status: "ended",
+      ended_reason: `ended-by-operator (unconfirmed: ${reason})`,
+      ended_by: "operator",
+      ended_at: new Date().toISOString(),
+    });
+    return { ok: true, reason, callRowId };
   }
 
   // Mark it ended immediately so it leaves the live monitor even if Vapi's
@@ -611,8 +633,10 @@ export async function runCampaignTick(): Promise<void> {
 
     const { data: campaigns } = await db().from("campaign").select("*").eq("status", "running");
     if (!campaigns?.length) {
-      // Nothing to do — stop the timer; start/boot-resume re-arms it.
-      stopCampaignWorker();
+      // Nothing to dial — but keep ticking while any call is still live so the
+      // stale sweeper above can close it. Stopping immediately left a call stuck
+      // "ringing" forever when the last campaign paused mid-flight (real incident).
+      if ((await activeCallCount()) === 0) stopCampaignWorker();
       return;
     }
 
@@ -681,6 +705,9 @@ async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
 
   // Respect the retry backoff: skip leads whose next_attempt_after is still in
   // the future (set on no-answer/voicemail). `null` means immediately eligible.
+  // Fetch MORE candidates than slots: many lead rows share one dial_phone (one
+  // contact managing several buildings), and the batch is deduped to distinct
+  // numbers below — dialing top-N rows raw rang the same person N times at once.
   const nowIso = new Date().toISOString();
   const { data: leads } = await db()
     .from("lead")
@@ -696,14 +723,25 @@ async function tickCampaign(campaign: Record<string, unknown>): Promise<void> {
     // scorers. Tiebreak by fewest attempts so fresh leads beat oft-retried ones.
     .order("lead_score", { ascending: false, nullsFirst: false })
     .order("attempts", { ascending: true })
-    .limit(slots)
+    .limit(Math.min(Math.max(slots * 10, 25), 200))
     .returns<LeadRow[]>();
 
   if (!leads?.length) return;
 
+  // One call per distinct number per batch; only successful dials consume a
+  // slot, so a skipped lead (in-flight number, frequency cap, DNC) doesn't
+  // shrink the batch below the operator's concurrency setting.
+  const seenPhones = new Set<string>();
+  let placed = 0;
   for (const lead of leads) {
+    if (placed >= slots) break;
+    if (seenPhones.has(lead.dial_phone as string)) continue;
+    seenPhones.add(lead.dial_phone as string);
     const r = await placeCall(lead);
-    if (r.ok) continue;
+    if (r.ok) {
+      placed++;
+      continue;
+    }
     log.warn("Skipped lead", { leadId: lead.id, campaignId, reason: r.reason });
     // A systemic/account-level Vapi error (daily-number cap, billing, suspension)
     // will reject EVERY call — so auto-pause this campaign instead of hammering

@@ -157,9 +157,12 @@ Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, t
   `optOut`, `lookupViolationCode`, `transferCall`/`endCall`.
 - **Dialer + worker** — `src/outbound/dialer.ts`: 15s multi-campaign tick with
   calling-window (lead's own timezone), DNC (fail-closed), per-number daily cap,
-  attempt cap + backoff, per-lead in-flight guard, per-run call budget
-  (auto-pause), stale-call sweeper, systemic-error auto-pause; manual "call now"
-  + test calls; throttled Twilio cost sync + auto campaign insights.
+  attempt cap + backoff, per-lead + per-number in-flight guards, dial batches
+  deduped to distinct numbers (concurrency N = N different people, even when
+  many lead rows share one contact number), per-run call budget (auto-pause),
+  stale-call sweeper (keeps ticking after pause until in-flight calls resolve),
+  systemic-error auto-pause; manual "call now" + test calls; throttled Twilio
+  cost sync + auto campaign insights.
 - **Webhook handlers** — `src/outbound/handlers.ts` (branch outbound vs inbound,
   persist status/transcript/tool-calls/end-of-call, disclosure/consent stamps,
   `ended_by` attribution, dispositions + sales fields).

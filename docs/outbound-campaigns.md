@@ -6,7 +6,8 @@ A compliant outbound calling system that dials elevator-violation leads **region
 Leads xlsx ──import (CLI or dashboard upload)──▶ outbound.lead ──auto-assign──▶ campaign.brand
 Worker (15s tick) / "call now" / test call ──▶ Vapi ──status/transcript/tools/end-of-call──▶ /vapi/webhook
         │  guardrails: window(lead tz) · DNC · per-number cap · attempts+backoff ·        │
-        │  in-flight guard · per-run budget · stale sweeper · systemic auto-pause          ▼
+        │  in-flight guards (lead + number) · distinct numbers per batch ·                 │
+        │  per-run budget · stale sweeper · systemic auto-pause                            ▼
         │                                     outbound.call + call_event + lead disposition + sales fields
         ├── every ~5 min: Twilio cost/status sync            │
         └── every N ended calls: AI campaign insight         ▼
@@ -41,22 +42,24 @@ Or upload from the dashboard (**Import leads** card → preview sheets → impor
 Pick the campaign in the dashboard and hit **Start** (optionally setting **Calls this run** and **concurrency**). A **confirmation popup** first shows the calling-window status per timezone group — how many eligible leads are dialable *right now* vs. when each group's window opens (e.g. "661 CA leads — opens 8:00 AM PT, in 47m") — so a quiet campaign is never a mystery. Starting early is always safe: the dialer holds each lead until its local window opens. Under the hood:
 
 - `POST /outbound/campaign/start` `{ campaignId, maxCalls?, maxConcurrent? }` — marks it `running`, stamps `run_started_at`, and starts the worker. **Each Start is a fresh batch**: the worker counts dial attempts since `run_started_at` and **auto-pauses that campaign** when it reaches `maxCalls`. Omit `maxCalls` for unlimited.
-- `POST /outbound/campaign/pause` — pause one (or all). The worker keeps ticking while any campaign runs and self-stops when none do.
+- `POST /outbound/campaign/pause` — pause one (or all). The worker keeps ticking while any campaign runs **or any call is still live** (so the stale sweeper can close in-flight calls after a pause — otherwise a missed webhook left a call "ringing" forever) and self-stops once both are quiet.
 
 **Multiple campaigns run concurrently.** Each `running` campaign is ticked independently with its own calling window, budget, and `max_concurrent`; active-call counts are **scoped per campaign**, so one campaign can't starve another. Total simultaneous calls = the sum of every running campaign's `max_concurrent` — mind your Vapi/Twilio account concurrency limit (there is no global cap).
+
+**Concurrency means distinct people.** Each tick's dial batch is deduped to **distinct phone numbers** — many lead rows share one number (a single contact managing several buildings; some numbers cover 10+ rows), so `max_concurrent: 3` dials 3 *different* numbers, never the same person 3× simultaneously. A per-number in-flight guard enforces the same rule across ticks and manual call-now.
 
 ### The worker's guardrails (every 15 s tick)
 
 Order of checks per lead (`placeCall` in `src/outbound/dialer.ts`):
 
 1. Dialable phone present, lead not `dnc`.
-2. **In-flight guard** — skip if the lead already has a live call (prevents tick + call-now double-dials).
+2. **In-flight guards (lead + number)** — skip if the lead *or its phone number* already has a live call (prevents tick + call-now double-dials, and stops lead rows that share one contact number from ringing the same person twice at once).
 3. **DNC suppression, fail-closed** — a listing blocks and marks the lead; an infrastructure lookup *error* blocks the dial without mislabeling the lead.
 4. **Calling window in the lead's own timezone** — `timezoneForState(lead.state)`, falling back to the campaign tz.
 5. **Per-number frequency cap** — max `MAX_CALLS_PER_NUMBER_PER_DAY` per phone per rolling 24 h (sets a cooldown so it isn't rechecked every tick).
 6. Brand routing (assistant + caller ID), then dial via Vapi with the lead's `variableValues`.
 
-Around the loop: leads are picked highest `lead_score` first among retryable dispositions (`new/queued/no_answer/voicemail`) under the attempt cap and past their `next_attempt_after` backoff (`RETRY_BACKOFF_MINUTES`); a **re-entrancy guard** stops overlapping ticks; a **stale-call sweeper** closes any call stuck live >15 min (`ended_reason='stale-timeout'`) and returns its lead to a retryable state — a missed end-of-call webhook can't pin a concurrency slot or strand a lead; and **systemic dial errors** (daily caps, billing, concurrency limits) auto-pause the campaign instead of burning the whole lead list. The worker resumes automatically after a redeploy if a campaign is still `running`.
+Around the loop: leads are picked highest `lead_score` first among retryable dispositions (`new/queued/no_answer/voicemail/ivr`) under the attempt cap and past their `next_attempt_after` backoff (`RETRY_BACKOFF_MINUTES`), then the batch is **deduped to distinct phone numbers** (a skipped lead doesn't consume a concurrency slot); a **re-entrancy guard** stops overlapping ticks; a **stale-call sweeper** closes any call stuck live >15 min (`ended_reason='stale-timeout'`) and returns its lead to a retryable state — a missed end-of-call webhook can't pin a concurrency slot or strand a lead; and **systemic dial errors** (daily caps, billing, concurrency limits) auto-pause the campaign instead of burning the whole lead list. The worker resumes automatically after a redeploy if a campaign is still `running` **or any call is still live** (so stray calls always get swept).
 
 ---
 
@@ -140,7 +143,7 @@ If a call ends without the agent setting a disposition, the handler infers one f
 The console (login required) is built for running several campaigns at once:
 
 - **Live campaigns** — one card per `running` campaign: dialed-this-run vs. budget, active calls, qualified count (Realtime + polling).
-- **Live monitor** — in-flight calls with streaming transcripts (Realtime on `call` + `call_event`); an **End call** button drops a stuck/bad call via the per-call control URL (`ended_by='operator'`).
+- **Live monitor** — in-flight calls with streaming transcripts (Realtime on `call` + `call_event`); an **End call** button drops a stuck/bad call via the per-call control URL (`ended_by='operator'`). If Vapi's control URL times out or rejects (the call usually already ended on Vapi's side), the row is **still marked ended** so the monitor clears — a late end-of-call webhook overwrites it with the real outcome if the call was somehow live.
 - **Recent calls** — recording, summary, paginated transcript, `ended_by` badge.
 - **Campaign controls** — start/pause with **Calls this run** + concurrency, rename/re-region, and the optional **Brand agent + caller ID** override ("Auto" = resolve from leads).
 - **Stats bar / leads table / export** — disposition breakdown, filter/search + per-lead "call now", CSV/XLSX export presets.

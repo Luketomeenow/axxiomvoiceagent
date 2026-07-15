@@ -1,61 +1,92 @@
 AXXIOM VOICE AGENTS — DAILY SUMMARY
-Date: 2026-07-01 (covers the last ~24 hours)
+Date: 2026-07-15 (covers the latest work; soft launch was 2026-07-07)
 
 =====================================================================
+Fixed the Ameritex live-dial incident: concurrency was ringing the SAME
+person 3x simultaneously (many lead rows share one phone number), and a
+paused campaign left a call stuck "ringing" forever with no way to clear
+it. The dialer now dials DISTINCT numbers per batch with a per-number
+in-flight guard, the worker keeps sweeping until in-flight calls resolve,
+and the dashboard's End-call clears the row even when Vapi times out.
+All documentation refreshed to match. PRs #5/#6/#7 merged to main.
 
 =====================================================================
-Wired real Twilio phone numbers into Vapi so each brand can dial from its
-own local caller ID WITHOUT Vapi's daily free-number call cap, and shipped
-a live multi-campaign monitor on the dashboard that shows every running
-campaign's dial / active / qualified counts in realtime.
+1. THE INCIDENT (Ameritex start, 2026-07-15 ~12:15 EDT)
+=====================================================================
+- Operator started Ameritex with concurrency 3 -> the dialer placed 3
+  simultaneous calls to the SAME number (three lead rows, one contact),
+  seconds apart. Confirmed in the data: the three 16:16Z calls all went
+  to one +1301 number and died as stale-timeout.
+- WHY: lead lists map ONE contact to MANY buildings. 186 numbers are
+  duplicated within campaigns; one Ameritex number covers 11 lead rows.
+  The dialer picked the top-N lead ROWS by score and its duplicate-call
+  guard only checked per-LEAD, not per-PHONE.
+- STUCK "RINGING": the stale-call sweeper only runs while the worker
+  ticks, and the worker stopped the moment all campaigns paused — so a
+  mid-flight call at pause time stayed "ringing" forever. On top, the
+  dashboard End-call button gave up when Vapi's control URL timed out
+  (the "End-call failed" errors in the logs) without clearing the row.
 
 =====================================================================
-1. TWILIO NUMBERS -> VAPI (escape the daily free-number cap)
+2. DIALER FIXES (src/outbound/dialer.ts, routes.ts, index.ts)
 =====================================================================
-- Added a one-command importer that registers your Twilio DIDs in Vapi and
-  returns each number's Vapi phoneNumberId (the id the dialer already uses
-  per brand):
-    bun run import-twilio-numbers --brand quality --number +13017999116
-    bun run import-twilio-numbers data/twilio-numbers.csv   (batch: brand,number[,name])
-    bun run import-twilio-numbers --list                    (show what's already in Vapi)
-- WHY: Vapi's own free/bought numbers have a DAILY outbound-call limit --
-  the exact error the dialer's isSystemicDialError() guard already
-  auto-pauses a campaign on. Imported Twilio numbers remove that cap and
-  give each brand a real local caller ID.
-- New files / config:
-    scripts/import-twilio-numbers.ts  (idempotent: re-runs match by E.164,
-                                       so a number is never imported twice)
-    src/config/env.ts: TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + assertTwilio()
-    package.json: "import-twilio-numbers" (+ ":node" fallback)
-- Confirmed the exact Vapi import API (POST /phone-number, provider "twilio")
-  against Vapi's live OpenAPI spec. Typecheck passes (bun run typecheck).
-
-  TO FINISH (manual, ~10 min):
-    a) Put TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN in .env
-       (Twilio Console -> Account -> API keys & tokens).
-    b) Run the importer for each brand's number, then paste the returned
-       phoneNumberId into that brand's vapiPhoneNumberId in
-       src/assistant/brands.ts (the 6 UUIDs there today are Vapi numbers --
-       `--list` shows provider, so any already [twilio] are done).
-    c) Register STIR/SHAKEN + CNAM on the Twilio numbers so outbound caller
-       ID isn't flagged "Spam Likely" (voice reputation, not A2P/SMS).
+- Per-NUMBER in-flight guard in placeCall: a number with a live call can
+  never be dialed again until it ends (applies to manual call-now too).
+- Each campaign tick now fetches a wider candidate pool (slots*10, max
+  200) and dedupes it to DISTINCT phone numbers -> concurrency 3-5 means
+  3-5 different people. Skipped leads no longer consume a slot (only
+  successful dials count against concurrency).
+- Worker lifecycle: keeps ticking while ANY call is still live (even with
+  zero running campaigns) so the sweeper can close strays; pause route +
+  boot-resume updated to match (resumes after deploy if calls are live).
+- End-call: on control-URL timeout/4xx (call usually already over on
+  Vapi's side) the row is now STILL marked ended (ended_by=operator,
+  reason "unconfirmed") so the monitor clears; a late end-of-call webhook
+  overwrites with the real outcome if the call was somehow live.
+- One-off cleanup: swept the call stuck "ringing" in prod DB (Ameritex,
+  created 16:33Z) + returned its lead to a retryable disposition. Live
+  calls now 0. Backend typecheck clean.
 
 =====================================================================
-2. LIVE CAMPAIGN MONITOR (dashboard)
+3. DOCUMENTATION REFRESH (this session)
 =====================================================================
-- New web/components/LiveCampaigns.tsx on the console page: a realtime
-  monitor of EVERY running campaign at once (not just the selected one).
-- Per campaign it shows calls dialed this run, active / in-flight calls,
-  and qualified count; updates via Supabase Realtime (campaign + call
-  changes) plus a 5s poll, and appears the moment a campaign starts.
-- Click a campaign to select it. Complements the multi-campaign dialing
-  worker (each running campaign dials on its own concurrency budget).
+- docs/outbound-campaigns.md: new "Concurrency means distinct people"
+  section; guardrail list now shows both in-flight guards + batch dedupe;
+  worker stop/resume conditions; End-call timeout behavior; retryable
+  dispositions now include `ivr`.
+- docs/api-reference.md: pause, call-now, and calls/:id/end rows updated
+  to the new semantics.
+- README.md dialer bullet + CLAUDE.md gotchas updated to match.
+- In-app /docs page (web/app/docs): Concurrency card now says "3-5 at
+  once means 3-5 different people — never the same number twice."
+
+=====================================================================
+4. CONTEXT — MERGED TO MAIN TODAY
+=====================================================================
+- PR #5 + #6 (reach accuracy + Twilio AMD/carrier status) MERGED.
+- PR #7 (in-app /docs product documentation route) MERGED.
+- The dialer fixes above ride on the in-app-docs branch -> main.
 
 =====================================================================
 STILL PENDING / NEXT
 =====================================================================
-- Twilio: add creds -> import numbers -> paste ids into brands.ts ->
-  STIR/SHAKEN + CNAM (see section 1). Nothing else in the dialer changes.
-- Optional: DB-backed per-brand number override (brand_phone:<slug> in
-  outbound.app_setting, mirroring brand_assistant:<slug>) so caller-ID
-  numbers can be swapped without editing brands.ts and redeploying.
+- DEPLOY: push to main triggers Railway (backend). Netlify (dashboard)
+  reportedly did NOT auto-deploy — verify the site is linked to main with
+  auto-publish on (Netlify -> Site config -> Build & deploy); trigger a
+  manual deploy if needed.
+- AFTER DEPLOY: set Ameritex max_concurrent back to 3-5 (both Ameritex
+  campaigns were dropped to 1 during troubleshooting), then Start.
+- VERIFY the PR #5/#6 deploy steps landed (if not already done):
+    a) Re-run scripts/sql/outbound_schema.sql (v_call_hourly, `ivr`,
+       AMD + carrier-status counts).
+    b) Re-run create-brand-assistants (dtmf tool + voicemailDetection
+       provider "twilio").
+    c) ENABLE_VOICEMAIL_DETECTION=true on Railway.
+    d) Backfill FLxx state codes -> FL (~352 rows; script in scratchpad).
+- DECIDE: Twilio Lookup enrichment (line-type/carrier/caller-name),
+  ~$40-80 one-time — still awaiting cost sign-off.
+- STILL OPEN: STIR/SHAKEN + CNAM on the Twilio numbers ("Spam Likely");
+  counsel review (state telemarketing registration/bonds, TCPA consent
+  basis, DPA/privacy).
+- WATCH after AMD is live: real human-reach %, qualified/contacted, and
+  cost-per-qualified on /analytics.

@@ -322,7 +322,7 @@ export default function DocsPage() {
               <Mini title="Do-not-call">Suppression checked before every dial; fails closed on error.</Mini>
               <Mini title="Frequency caps">Per-lead attempts + per-number daily cap, day-part-spread retries.</Mini>
               <Mini title="Per-run budget">&ldquo;Dial N this run,&rdquo; then the campaign auto-pauses.</Mini>
-              <Mini title="Concurrency">Many campaigns at once, each on its own budget — no starving.</Mini>
+              <Mini title="Concurrency">3–5 at once means 3–5 different people — never the same number twice at the same time.</Mini>
               <Mini title="Self-healing">Stuck calls swept up; account-level errors auto-pause the run.</Mini>
             </div>
           </section>

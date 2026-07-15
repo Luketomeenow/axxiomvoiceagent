@@ -142,8 +142,18 @@ if (env.supabaseUrl && env.supabaseServiceRoleKey && env.outboundAssistantId) {
       const { db } = await import("./outbound/db.ts");
       const { startCampaignWorker } = await import("./outbound/dialer.ts");
       const { data } = await db().from("campaign").select("id").eq("status", "running").limit(1).maybeSingle();
-      if (data) {
-        log.info("Resuming outbound campaign worker (campaign was running)");
+      // Also resume when calls are still live with no campaign running (e.g. a
+      // deploy landed right after pause) — the worker must tick until the stale
+      // sweeper resolves them, else they sit "ringing" forever.
+      const { count: liveCalls } = await db()
+        .from("call")
+        .select("id", { count: "exact", head: true })
+        .in("status", ["queued", "ringing", "in-progress"]);
+      if (data || liveCalls) {
+        log.info("Resuming outbound campaign worker", {
+          runningCampaign: Boolean(data),
+          liveCalls: liveCalls ?? 0,
+        });
         startCampaignWorker();
       }
     } catch (err) {

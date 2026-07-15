@@ -27,14 +27,14 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 | `GET` | `/outbound/campaigns` | — | List all campaigns (newest first). |
 | `GET` | `/outbound/stats` | `?campaignId=` | Disposition breakdown + total, scoped to a campaign when given. |
 | `POST` | `/outbound/campaign/start` | `{ campaignId?, maxCalls?, maxConcurrent? }` | Mark the campaign `running`, reset `run_started_at` (each Start is a fresh batch), optionally set the per-run call budget + concurrency, auto-assign its brand, and start the worker. Omit `campaignId` to start all non-`done` (no budget). |
-| `POST` | `/outbound/campaign/pause` | `{ campaignId? }` | Pause one (or all) campaigns; the worker stops only when none remain running. |
+| `POST` | `/outbound/campaign/pause` | `{ campaignId? }` | Pause one (or all) campaigns; the worker stops only when none remain running **and no calls are still live** (it keeps ticking so the stale sweeper can close in-flight calls). |
 | `GET` | `/outbound/campaign/:id/window-status` | — | Pre-start preview: the campaign's eligible leads grouped by **their own timezone** — how many are dialable right now vs. when each group's calling window opens. Backs the Start-confirmation popup. |
 | `POST` | `/outbound/campaign/:id/update` | `{ name?, region?, brand?, maxConcurrent?, maxCalls? }` | Rename / re-region / set brand (also sets campaign `timezone` from the brand) / tune concurrency + per-run budget. |
 | `POST` | `/outbound/campaign/:id/delete` | — | Delete a campaign **and all its leads** (calls/events cascade). |
 | `GET` | `/outbound/brand-list` | — | Registry brands for the campaign dropdown (`slug`, `displayName`, `serviceArea`). |
 | `GET` | `/outbound/brands` | `?campaignId=` | Distinct `servicing_brand` values in the leads (for the export brand filter). |
-| `POST` | `/outbound/call-now/:leadId` | — | Manually dial one lead now (bypasses the calling window; still honors DNC + in-flight guard). |
-| `POST` | `/outbound/calls/:id/end` | — | End an in-flight call from the dashboard (per-call Vapi control URL; marks `ended_by='operator'`). |
+| `POST` | `/outbound/call-now/:leadId` | — | Manually dial one lead now (bypasses the calling window; still honors DNC + the per-lead and per-number in-flight guards). |
+| `POST` | `/outbound/calls/:id/end` | — | End an in-flight call from the dashboard (per-call Vapi control URL; marks `ended_by='operator'`). If the control URL times out/rejects (call usually already over), the row is still marked ended so the monitor clears; a late end-of-call webhook reconciles the real outcome. |
 | `POST` | `/outbound/test-call` | `{ phone, name?, buildingName?, address?, city?, problemType?, violationCodes?, brand? }` | Dial an **arbitrary** number to test the agent — no lead row. Optional `brand` slug routes to that brand's assistant + caller ID. DNC-checked. |
 
 ### Leads: import & export
