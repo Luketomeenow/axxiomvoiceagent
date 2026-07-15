@@ -342,9 +342,16 @@ outbound.post("/outbound/campaign/pause", async (c) => {
   const query = db().from("campaign").update({ status: "paused", updated_at: new Date().toISOString() });
   const { error } = body.campaignId ? await query.eq("id", body.campaignId) : await query.eq("status", "running");
   if (error) return c.json({ error: error.message }, 500);
-  // Only stop the worker if NO campaigns are left running (multiple can run at once).
+  // Only stop the worker if NO campaigns are left running (multiple can run at
+  // once) AND no calls are still live — the tick's stale sweeper must keep
+  // running until in-flight calls resolve, or a call whose end-of-call webhook
+  // is missed stays "ringing" forever. The tick self-idles once all calls end.
   const { count } = await db().from("campaign").select("id", { count: "exact", head: true }).eq("status", "running");
-  if (!count) stopCampaignWorker();
+  const { count: liveCalls } = await db()
+    .from("call")
+    .select("id", { count: "exact", head: true })
+    .in("status", ["queued", "ringing", "in-progress"]);
+  if (!count && !liveCalls) stopCampaignWorker();
   log.info("Campaign paused", { campaignId: body.campaignId ?? "all", stillRunning: count ?? 0 });
   return c.json({ ok: true, status: "paused" });
 });

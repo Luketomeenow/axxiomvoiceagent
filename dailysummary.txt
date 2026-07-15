@@ -1,61 +1,97 @@
 AXXIOM VOICE AGENTS — DAILY SUMMARY
-Date: 2026-07-01 (covers the last ~24 hours)
+Date: 2026-07-08 (covers the latest work; soft launch was 2026-07-07)
 
 =====================================================================
+Made the analytics HONEST and added real Twilio telephony intelligence.
+The "Who we reached" panel was overcounting machines as people — fixed it,
+then wired Twilio answering-machine detection (AMD) so the human-vs-machine
+split is real, plus a carrier-status breakdown. Decided AGAINST Twilio
+Conversation Intelligence (redundant with what Vapi + our Claude insights
+already produce). Lookup number-intelligence is scoped but deferred pending
+a small one-time cost sign-off.
 
 =====================================================================
-Wired real Twilio phone numbers into Vapi so each brand can dial from its
-own local caller ID WITHOUT Vapi's daily free-number call cap, and shipped
-a live multi-campaign monitor on the dashboard that shows every running
-campaign's dial / active / qualified counts in realtime.
+1. REACH ANALYTICS ACCURACY FIX ("Who we reached")
+=====================================================================
+- PROBLEM (caught on the dashboard): the panel showed "61% reached a person"
+  with Voicemail/IVR = 0. Audited against the data: of 218 "reached a person,"
+  113 (52%) had voicemail/IVR/switchboard language in the transcript; only 16
+  (7%) were a real back-and-forth. Voicemail/IVR read 0 only because detection
+  was off and the new `ivr` disposition isn't deployed yet — so machines the
+  agent monologued at were counted as people.
+- ROOT CAUSE: "connected" = ended_by customer/agent, which can't tell a live
+  human from a machine until answering-machine detection is on.
+- FIX (honest labeling, no fabricated metric): headline -> "% answered"; green
+  bar -> "Answered (incl. machines)"; an amber warning that it over-counts real
+  people until detection is on. "Failed to place" relabeled as a dial error.
 
 =====================================================================
-1. TWILIO NUMBERS -> VAPI (escape the daily free-number cap)
+2. TWILIO TELEPHONY INTELLIGENCE -> ANALYTICS
 =====================================================================
-- Added a one-command importer that registers your Twilio DIDs in Vapi and
-  returns each number's Vapi phoneNumberId (the id the dialer already uses
-  per brand):
-    bun run import-twilio-numbers --brand quality --number +13017999116
-    bun run import-twilio-numbers data/twilio-numbers.csv   (batch: brand,number[,name])
-    bun run import-twilio-numbers --list                    (show what's already in Vapi)
-- WHY: Vapi's own free/bought numbers have a DAILY outbound-call limit --
-  the exact error the dialer's isSystemicDialError() guard already
-  auto-pauses a campaign on. Imported Twilio numbers remove that cap and
-  give each brand a real local caller ID.
-- New files / config:
-    scripts/import-twilio-numbers.ts  (idempotent: re-runs match by E.164,
-                                       so a number is never imported twice)
-    src/config/env.ts: TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN + assertTwilio()
-    package.json: "import-twilio-numbers" (+ ":node" fallback)
-- Confirmed the exact Vapi import API (POST /phone-number, provider "twilio")
-  against Vapi's live OpenAPI spec. Typecheck passes (bun run typecheck).
-
-  TO FINISH (manual, ~10 min):
-    a) Put TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN in .env
-       (Twilio Console -> Account -> API keys & tokens).
-    b) Run the importer for each brand's number, then paste the returned
-       phoneNumberId into that brand's vapiPhoneNumberId in
-       src/assistant/brands.ts (the 6 UUIDs there today are Vapi numbers --
-       `--list` shows provider, so any already [twilio] are done).
-    c) Register STIR/SHAKEN + CNAM on the Twilio numbers so outbound caller
-       ID isn't flagged "Spam Likely" (voice reputation, not A2P/SMS).
+- AMD (human vs machine): switched Vapi's voicemailDetection provider from
+  "vapi" to "twilio" (src/assistant/outbound/config.ts) so TWILIO runs machine
+  detection and stamps the Call resource's AnsweredBy. twilioSync already reads
+  that into call.answered_by -> a REAL human/machine/fax split. Bonus: same
+  switch also gives the agent a machine signal (stop pitching machines).
+- v_call_quality extended (scripts/sql/outbound_schema.sql): answered_human /
+  answered_machine / answered_fax (AMD) + status_completed / busy / no_answer /
+  failed / canceled (Twilio carrier disposition).
+- Dashboard: "Who we reached" now shows the accurate AMD split ("X% reached a
+  person," true machine %) WHEN AMD data is present, and falls back to the
+  honest version otherwise. New "Carrier status (Twilio)" breakdown in Call
+  quality. Everything degrades gracefully before the migration / before AMD.
+- Twilio Conversation Intelligence: EVALUATED, SKIPPED. It duplicates Vapi's
+  transcript/sentiment + our own Claude campaign-insights (objections /
+  compliance / topics), targets human-agent call centers, and adds per-minute
+  cost. Not worth it.
+- Backend + web typecheck clean. Shipped on PR #5 (open).
 
 =====================================================================
-2. LIVE CAMPAIGN MONITOR (dashboard)
+3. CONTEXT — WHAT SHIPPED THIS CYCLE (already merged to main)
 =====================================================================
-- New web/components/LiveCampaigns.tsx on the console page: a realtime
-  monitor of EVERY running campaign at once (not just the selected one).
-- Per campaign it shows calls dialed this run, active / in-flight calls,
-  and qualified count; updates via Supabase Realtime (campaign + call
-  changes) plus a 5s poll, and appears the moment a campaign starts.
-- Click a campaign to select it. Complements the multi-campaign dialing
-  worker (each running campaign dials on its own concurrency budget).
+- Soft launch 2026-07-07. Launch-day incident: the outbound SQL failed with
+  42P16 (a duplicate v_call_quality definition rolled back the whole run,
+  leaving the ended_by/cost columns + no transcripts) — fixed (drop-view-first);
+  27 dead-lettered end-of-call reports replayed with zero data loss.
+- Dialer starvation fixed: auto-analyze (a 1-2 min Claude call) was running
+  inside the tick's re-entrancy guard and blocking dialing -> now detached.
+- Campaign-insights reliability: raised max_tokens (was truncating the JSON)
+  + tolerant parse + made "Analyze now" return immediately and poll.
+- REACH OPTIMIZATION (the big lever — ~half of dials were hitting machines):
+  IVR/gatekeeper/voicemail handling in the prompt + a DTMF tool (press 0 for an
+  operator) + `ivr` disposition; lead-ordering NULLS-FIRST bug fixed + tiebreak;
+  tighter dead-air silence handling; opener accuracy ({{humanProblem}} not
+  hardcoded "overdue"); blank/placeholder building-name hardening; county-
+  suffixed state codes normalized (FLCO->FL); expanded objections + callback-
+  time; day-part-spreading retry backoff.
+- ANALYTICS additions: "Who we reached" reach breakdown, "Best time to call"
+  (connect rate by hour, v_call_hourly), single cost-per-qualified metric, and
+  a paginated + scrollable compliance-audit table.
+- Pre-start calling-window popup (shows dialable-now vs when each timezone
+  group opens) so a quiet campaign is never a mystery.
+- PRs: #1 (Twilio caller IDs) + #2 (hotfixes) + #3 (optimization) + #4
+  (analytics) MERGED to main. #5 (reach accuracy + Twilio AMD/carrier status)
+  OPEN.
 
 =====================================================================
 STILL PENDING / NEXT
 =====================================================================
-- Twilio: add creds -> import numbers -> paste ids into brands.ts ->
-  STIR/SHAKEN + CNAM (see section 1). Nothing else in the dialer changes.
-- Optional: DB-backed per-brand number override (brand_phone:<slug> in
-  outbound.app_setting, mirroring brand_assistant:<slug>) so caller-ID
-  numbers can be swapped without editing brands.ts and redeploying.
+- MERGE PR #5, then DEPLOY steps (Railway + Netlify):
+    a) Re-run scripts/sql/outbound_schema.sql (adds v_call_hourly, the `ivr`
+       column, AMD + carrier-status counts).
+    b) Re-run create-brand-assistants — VERIFY Vapi accepts the new `dtmf` tool
+       and voicemailDetection provider:"twilio"; if either is rejected, remove
+       it (one-line) and re-run.
+    c) Set ENABLE_VOICEMAIL_DETECTION=true on Railway — this now does double
+       duty: fixes the agent's machine handling AND lights up the accurate
+       reach analytics (Twilio AMD).
+    d) Backfill existing FLxx state codes -> FL (~352 rows; script ready in
+       scratchpad). Future imports are already normalized.
+- DECIDE: Twilio Lookup enrichment (line-type / carrier / caller-name) to kill
+  the switchboard problem at the source — ~$40-80 one-time for the list. Built
+  as a plan, awaiting cost sign-off.
+- STILL OPEN from earlier: STIR/SHAKEN + CNAM on the Twilio numbers (avoid
+  "Spam Likely"); counsel review (state telemarketing registration/bonds, TCPA
+  consent basis, DPA/privacy).
+- WATCH after AMD is live: real human-reach %, qualified/contacted, and
+  cost-per-qualified on /analytics — that's the scoreboard for the reach work.
