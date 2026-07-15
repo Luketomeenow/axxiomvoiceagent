@@ -1,97 +1,92 @@
 AXXIOM VOICE AGENTS — DAILY SUMMARY
-Date: 2026-07-08 (covers the latest work; soft launch was 2026-07-07)
+Date: 2026-07-15 (covers the latest work; soft launch was 2026-07-07)
 
 =====================================================================
-Made the analytics HONEST and added real Twilio telephony intelligence.
-The "Who we reached" panel was overcounting machines as people — fixed it,
-then wired Twilio answering-machine detection (AMD) so the human-vs-machine
-split is real, plus a carrier-status breakdown. Decided AGAINST Twilio
-Conversation Intelligence (redundant with what Vapi + our Claude insights
-already produce). Lookup number-intelligence is scoped but deferred pending
-a small one-time cost sign-off.
+Fixed the Ameritex live-dial incident: concurrency was ringing the SAME
+person 3x simultaneously (many lead rows share one phone number), and a
+paused campaign left a call stuck "ringing" forever with no way to clear
+it. The dialer now dials DISTINCT numbers per batch with a per-number
+in-flight guard, the worker keeps sweeping until in-flight calls resolve,
+and the dashboard's End-call clears the row even when Vapi times out.
+All documentation refreshed to match. PRs #5/#6/#7 merged to main.
 
 =====================================================================
-1. REACH ANALYTICS ACCURACY FIX ("Who we reached")
+1. THE INCIDENT (Ameritex start, 2026-07-15 ~12:15 EDT)
 =====================================================================
-- PROBLEM (caught on the dashboard): the panel showed "61% reached a person"
-  with Voicemail/IVR = 0. Audited against the data: of 218 "reached a person,"
-  113 (52%) had voicemail/IVR/switchboard language in the transcript; only 16
-  (7%) were a real back-and-forth. Voicemail/IVR read 0 only because detection
-  was off and the new `ivr` disposition isn't deployed yet — so machines the
-  agent monologued at were counted as people.
-- ROOT CAUSE: "connected" = ended_by customer/agent, which can't tell a live
-  human from a machine until answering-machine detection is on.
-- FIX (honest labeling, no fabricated metric): headline -> "% answered"; green
-  bar -> "Answered (incl. machines)"; an amber warning that it over-counts real
-  people until detection is on. "Failed to place" relabeled as a dial error.
+- Operator started Ameritex with concurrency 3 -> the dialer placed 3
+  simultaneous calls to the SAME number (three lead rows, one contact),
+  seconds apart. Confirmed in the data: the three 16:16Z calls all went
+  to one +1301 number and died as stale-timeout.
+- WHY: lead lists map ONE contact to MANY buildings. 186 numbers are
+  duplicated within campaigns; one Ameritex number covers 11 lead rows.
+  The dialer picked the top-N lead ROWS by score and its duplicate-call
+  guard only checked per-LEAD, not per-PHONE.
+- STUCK "RINGING": the stale-call sweeper only runs while the worker
+  ticks, and the worker stopped the moment all campaigns paused — so a
+  mid-flight call at pause time stayed "ringing" forever. On top, the
+  dashboard End-call button gave up when Vapi's control URL timed out
+  (the "End-call failed" errors in the logs) without clearing the row.
 
 =====================================================================
-2. TWILIO TELEPHONY INTELLIGENCE -> ANALYTICS
+2. DIALER FIXES (src/outbound/dialer.ts, routes.ts, index.ts)
 =====================================================================
-- AMD (human vs machine): switched Vapi's voicemailDetection provider from
-  "vapi" to "twilio" (src/assistant/outbound/config.ts) so TWILIO runs machine
-  detection and stamps the Call resource's AnsweredBy. twilioSync already reads
-  that into call.answered_by -> a REAL human/machine/fax split. Bonus: same
-  switch also gives the agent a machine signal (stop pitching machines).
-- v_call_quality extended (scripts/sql/outbound_schema.sql): answered_human /
-  answered_machine / answered_fax (AMD) + status_completed / busy / no_answer /
-  failed / canceled (Twilio carrier disposition).
-- Dashboard: "Who we reached" now shows the accurate AMD split ("X% reached a
-  person," true machine %) WHEN AMD data is present, and falls back to the
-  honest version otherwise. New "Carrier status (Twilio)" breakdown in Call
-  quality. Everything degrades gracefully before the migration / before AMD.
-- Twilio Conversation Intelligence: EVALUATED, SKIPPED. It duplicates Vapi's
-  transcript/sentiment + our own Claude campaign-insights (objections /
-  compliance / topics), targets human-agent call centers, and adds per-minute
-  cost. Not worth it.
-- Backend + web typecheck clean. Shipped on PR #5 (open).
+- Per-NUMBER in-flight guard in placeCall: a number with a live call can
+  never be dialed again until it ends (applies to manual call-now too).
+- Each campaign tick now fetches a wider candidate pool (slots*10, max
+  200) and dedupes it to DISTINCT phone numbers -> concurrency 3-5 means
+  3-5 different people. Skipped leads no longer consume a slot (only
+  successful dials count against concurrency).
+- Worker lifecycle: keeps ticking while ANY call is still live (even with
+  zero running campaigns) so the sweeper can close strays; pause route +
+  boot-resume updated to match (resumes after deploy if calls are live).
+- End-call: on control-URL timeout/4xx (call usually already over on
+  Vapi's side) the row is now STILL marked ended (ended_by=operator,
+  reason "unconfirmed") so the monitor clears; a late end-of-call webhook
+  overwrites with the real outcome if the call was somehow live.
+- One-off cleanup: swept the call stuck "ringing" in prod DB (Ameritex,
+  created 16:33Z) + returned its lead to a retryable disposition. Live
+  calls now 0. Backend typecheck clean.
 
 =====================================================================
-3. CONTEXT — WHAT SHIPPED THIS CYCLE (already merged to main)
+3. DOCUMENTATION REFRESH (this session)
 =====================================================================
-- Soft launch 2026-07-07. Launch-day incident: the outbound SQL failed with
-  42P16 (a duplicate v_call_quality definition rolled back the whole run,
-  leaving the ended_by/cost columns + no transcripts) — fixed (drop-view-first);
-  27 dead-lettered end-of-call reports replayed with zero data loss.
-- Dialer starvation fixed: auto-analyze (a 1-2 min Claude call) was running
-  inside the tick's re-entrancy guard and blocking dialing -> now detached.
-- Campaign-insights reliability: raised max_tokens (was truncating the JSON)
-  + tolerant parse + made "Analyze now" return immediately and poll.
-- REACH OPTIMIZATION (the big lever — ~half of dials were hitting machines):
-  IVR/gatekeeper/voicemail handling in the prompt + a DTMF tool (press 0 for an
-  operator) + `ivr` disposition; lead-ordering NULLS-FIRST bug fixed + tiebreak;
-  tighter dead-air silence handling; opener accuracy ({{humanProblem}} not
-  hardcoded "overdue"); blank/placeholder building-name hardening; county-
-  suffixed state codes normalized (FLCO->FL); expanded objections + callback-
-  time; day-part-spreading retry backoff.
-- ANALYTICS additions: "Who we reached" reach breakdown, "Best time to call"
-  (connect rate by hour, v_call_hourly), single cost-per-qualified metric, and
-  a paginated + scrollable compliance-audit table.
-- Pre-start calling-window popup (shows dialable-now vs when each timezone
-  group opens) so a quiet campaign is never a mystery.
-- PRs: #1 (Twilio caller IDs) + #2 (hotfixes) + #3 (optimization) + #4
-  (analytics) MERGED to main. #5 (reach accuracy + Twilio AMD/carrier status)
-  OPEN.
+- docs/outbound-campaigns.md: new "Concurrency means distinct people"
+  section; guardrail list now shows both in-flight guards + batch dedupe;
+  worker stop/resume conditions; End-call timeout behavior; retryable
+  dispositions now include `ivr`.
+- docs/api-reference.md: pause, call-now, and calls/:id/end rows updated
+  to the new semantics.
+- README.md dialer bullet + CLAUDE.md gotchas updated to match.
+- In-app /docs page (web/app/docs): Concurrency card now says "3-5 at
+  once means 3-5 different people — never the same number twice."
+
+=====================================================================
+4. CONTEXT — MERGED TO MAIN TODAY
+=====================================================================
+- PR #5 + #6 (reach accuracy + Twilio AMD/carrier status) MERGED.
+- PR #7 (in-app /docs product documentation route) MERGED.
+- The dialer fixes above ride on the in-app-docs branch -> main.
 
 =====================================================================
 STILL PENDING / NEXT
 =====================================================================
-- MERGE PR #5, then DEPLOY steps (Railway + Netlify):
-    a) Re-run scripts/sql/outbound_schema.sql (adds v_call_hourly, the `ivr`
-       column, AMD + carrier-status counts).
-    b) Re-run create-brand-assistants — VERIFY Vapi accepts the new `dtmf` tool
-       and voicemailDetection provider:"twilio"; if either is rejected, remove
-       it (one-line) and re-run.
-    c) Set ENABLE_VOICEMAIL_DETECTION=true on Railway — this now does double
-       duty: fixes the agent's machine handling AND lights up the accurate
-       reach analytics (Twilio AMD).
-    d) Backfill existing FLxx state codes -> FL (~352 rows; script ready in
-       scratchpad). Future imports are already normalized.
-- DECIDE: Twilio Lookup enrichment (line-type / carrier / caller-name) to kill
-  the switchboard problem at the source — ~$40-80 one-time for the list. Built
-  as a plan, awaiting cost sign-off.
-- STILL OPEN from earlier: STIR/SHAKEN + CNAM on the Twilio numbers (avoid
-  "Spam Likely"); counsel review (state telemarketing registration/bonds, TCPA
-  consent basis, DPA/privacy).
+- DEPLOY: push to main triggers Railway (backend). Netlify (dashboard)
+  reportedly did NOT auto-deploy — verify the site is linked to main with
+  auto-publish on (Netlify -> Site config -> Build & deploy); trigger a
+  manual deploy if needed.
+- AFTER DEPLOY: set Ameritex max_concurrent back to 3-5 (both Ameritex
+  campaigns were dropped to 1 during troubleshooting), then Start.
+- VERIFY the PR #5/#6 deploy steps landed (if not already done):
+    a) Re-run scripts/sql/outbound_schema.sql (v_call_hourly, `ivr`,
+       AMD + carrier-status counts).
+    b) Re-run create-brand-assistants (dtmf tool + voicemailDetection
+       provider "twilio").
+    c) ENABLE_VOICEMAIL_DETECTION=true on Railway.
+    d) Backfill FLxx state codes -> FL (~352 rows; script in scratchpad).
+- DECIDE: Twilio Lookup enrichment (line-type/carrier/caller-name),
+  ~$40-80 one-time — still awaiting cost sign-off.
+- STILL OPEN: STIR/SHAKEN + CNAM on the Twilio numbers ("Spam Likely");
+  counsel review (state telemarketing registration/bonds, TCPA consent
+  basis, DPA/privacy).
 - WATCH after AMD is live: real human-reach %, qualified/contacted, and
-  cost-per-qualified on /analytics — that's the scoreboard for the reach work.
+  cost-per-qualified on /analytics.
