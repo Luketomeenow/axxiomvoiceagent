@@ -54,8 +54,10 @@ src/
 scripts/
   create-assistant.ts, create-outbound-assistant.ts, create-brand-assistants.ts, import-leads.ts, import-codes.ts
   elevenlabs/create-convai-agent.ts; seed/ (code KB); sql/ (ax_voice_call.sql, outbound_schema.sql)
-web/                  Next.js + Tailwind dashboard — console (page.tsx: LiveCampaigns realtime
-                      multi-campaign monitor, monitor, leads, test-call, export)
+web/                  Next.js + Tailwind dashboard — tabbed console (page.tsx: Overview =
+                      controls/stats/live monitor, Call history, Leads = import/export/table,
+                      Agent studio = test-call/voice/insights; LiveCampaigns strip always visible;
+                      panels stay mounted — CSS-hidden — so Realtime transcript streams survive tab switches)
                       + /analytics (funnel, trends, call quality, compliance audit; charts in components/Charts.tsx)
 data/                 Lead workbooks + code lists (PII) — gitignored, never committed
 docs/                 Full documentation (see docs/README.md)

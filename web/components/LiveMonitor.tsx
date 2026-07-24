@@ -80,7 +80,7 @@ export function LiveMonitor() {
       </div>
       {activeCalls.length === 0 ? (
         <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-400">
-          No calls in progress. Start the campaign or use “Call now”.
+          No calls in progress. Start the campaign, or place a test call from Agent studio.
         </p>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
