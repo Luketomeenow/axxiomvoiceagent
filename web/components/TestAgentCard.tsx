@@ -29,7 +29,7 @@ export function TestAgentCard() {
     setResult(null);
     try {
       const r = await api.testCall(form);
-      setResult(r.ok ? "Calling now — watch the live monitor below." : `Could not place call: ${r.reason ?? "unknown error"}`);
+      setResult(r.ok ? "Calling now — watch it in Live calls on the Overview tab." : `Could not place call: ${r.reason ?? "unknown error"}`);
     } catch (e) {
       setResult(`Error: ${String(e)}`);
     } finally {

@@ -52,6 +52,15 @@ function sumQuality(rows: QualityRow[]) {
   const endedAgent = sum((r) => r.ended_agent);
   const endedOperator = sum((r) => r.ended_operator);
   const endedSystem = sum((r) => r.ended_system);
+  // Twilio AMD (0 until machine detection is enabled) + carrier status.
+  const answeredHuman = sum((r) => r.answered_human ?? 0);
+  const answeredMachine = sum((r) => r.answered_machine ?? 0);
+  const answeredFax = sum((r) => r.answered_fax ?? 0);
+  const statusCompleted = sum((r) => r.status_completed ?? 0);
+  const statusBusy = sum((r) => r.status_busy ?? 0);
+  const statusNoAnswer = sum((r) => r.status_no_answer ?? 0);
+  const statusFailed = sum((r) => r.status_failed ?? 0);
+  const statusCanceled = sum((r) => r.status_canceled ?? 0);
   const vapiCost = sum((r) => Number(r.vapi_cost) || 0);
   const telephonyCost = sum((r) => Number(r.telephony_cost) || 0);
   const totalCost = sum((r) => Number(r.total_cost) || 0);
@@ -75,6 +84,16 @@ function sumQuality(rows: QualityRow[]) {
     endedAgent,
     endedOperator,
     endedSystem,
+    answeredHuman,
+    answeredMachine,
+    answeredFax,
+    amdTotal: answeredHuman + answeredMachine + answeredFax,
+    statusCompleted,
+    statusBusy,
+    statusNoAnswer,
+    statusFailed,
+    statusCanceled,
+    statusTotal: statusCompleted + statusBusy + statusNoAnswer + statusFailed + statusCanceled,
     vapiCost,
     telephonyCost,
     totalCost,
@@ -219,6 +238,9 @@ export default function AnalyticsPage() {
             <button onClick={syncTwilio} disabled={syncing} className="btn btn-ghost btn-xs disabled:opacity-40" title="Pull Twilio call cost + carrier status onto recent calls">
               {syncing ? "Syncing…" : "↻ Twilio costs"}
             </button>
+            <Link href="/docs" className="btn btn-ghost btn-xs">
+              📖 Docs
+            </Link>
             <Link href="/" className="btn btn-ghost btn-xs">
               ← Console
             </Link>
@@ -267,39 +289,73 @@ export default function AnalyticsPage() {
         </section>
 
         <div className="grid gap-5 lg:grid-cols-2">
-          {/* Reach breakdown — the core lever: are we reaching PEOPLE or machines? */}
+          {/* Reach breakdown. IMPORTANT: "connected" = a call the agent talked on
+              (ended_by customer/agent). It does NOT distinguish a live person from
+              a machine until voicemail detection is ON + the ivr disposition ships
+              — so we label it "Answered" and warn when the machine split is missing. */}
           <section className="card card-pad">
             <div className="mb-1 flex items-center justify-between">
               <h2 className="section-title">Who we reached</h2>
-              {quality && quality.calls > 0 && (
-                <span className="text-xs text-emerald-300">
-                  {pct(quality.connected, quality.calls)}% reached a person
-                </span>
-              )}
+              {quality &&
+                quality.calls > 0 &&
+                (quality.amdTotal > 0 ? (
+                  <span className="text-xs text-emerald-300">
+                    {pct(quality.answeredHuman, quality.amdTotal)}% reached a person
+                  </span>
+                ) : (
+                  <span className="text-xs text-emerald-300">{pct(quality.connected, quality.calls)}% answered</span>
+                ))}
             </div>
-            <p className="mb-3 text-xs text-slate-500">
-              Most cold dials hit a machine or switchboard. This is the number to move — more people reached = more
-              qualified leads.
-            </p>
-            {quality && (
-              <BarList
-                items={[
-                  { label: "Reached a person", value: quality.connected, accent: "emerald" },
-                  { label: "Voicemail", value: quality.voicemail, accent: "indigo" },
-                  { label: "Automated menu (IVR)", value: quality.ivr, accent: "amber" },
-                  { label: "No answer", value: quality.noAnswer, accent: "slate" },
-                  { label: "Failed to place", value: quality.failed, accent: "rose" },
-                ]}
-              />
-            )}
-            {quality && quality.calls > 0 && (
-              <p className="mt-3 text-xs text-slate-400">
-                Machines / switchboards:{" "}
-                <span className="font-semibold text-slate-200">
-                  {pct(quality.voicemail + quality.ivr + quality.noAnswer, quality.calls)}%
-                </span>{" "}
-                of dials. Lower this with better direct-dial numbers, IVR navigation, and best-time calling.
-              </p>
+            {quality && quality.amdTotal > 0 ? (
+              <>
+                <p className="mb-3 text-xs text-slate-500">
+                  Live human vs. machine, from Twilio answering-machine detection. Getting more calls to a real
+                  decision-maker is the lever for qualified leads.
+                </p>
+                <BarList
+                  items={[
+                    { label: "Reached a person", value: quality.answeredHuman, accent: "emerald" },
+                    { label: "Answering machine / voicemail", value: quality.answeredMachine, accent: "indigo" },
+                    { label: "Fax", value: quality.answeredFax, accent: "slate" },
+                    { label: "No answer", value: quality.noAnswer, accent: "slate" },
+                    { label: "Failed to place (dial error)", value: quality.failed, accent: "rose" },
+                  ]}
+                />
+                <p className="mt-3 text-xs text-slate-400">
+                  Machines:{" "}
+                  <span className="font-semibold text-slate-200">
+                    {pct(quality.answeredMachine + quality.answeredFax, quality.amdTotal)}%
+                  </span>{" "}
+                  of answered calls (Twilio AMD). Lower it with direct-dial numbers, IVR navigation, and best-time
+                  calling.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mb-3 text-xs text-slate-500">
+                  “Answered” = the call connected and the agent spoke. Getting more of those to a real decision-maker
+                  (vs. a machine or switchboard) is the lever for qualified leads.
+                </p>
+                {quality && (
+                  <BarList
+                    items={[
+                      { label: "Answered (incl. machines)", value: quality.connected, accent: "emerald" },
+                      { label: "Voicemail", value: quality.voicemail, accent: "indigo" },
+                      { label: "Automated menu (IVR)", value: quality.ivr, accent: "amber" },
+                      { label: "No answer", value: quality.noAnswer, accent: "slate" },
+                      { label: "Failed to place (dial error)", value: quality.failed, accent: "rose" },
+                    ]}
+                  />
+                )}
+                {quality && quality.calls > 0 && (
+                  <p className="mt-3 rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                    ⚠ “Answered” still includes answering machines &amp; phone-tree menus — Twilio machine detection
+                    isn’t on yet, so this over-counts real people. Set{" "}
+                    <span className="font-mono">ENABLE_VOICEMAIL_DETECTION=true</span> (Twilio AMD) to split people from
+                    machines. (Recent transcripts suggest ~half of “answered” calls are actually machines.)
+                  </p>
+                )}
+              </>
             )}
           </section>
 
@@ -385,6 +441,24 @@ export default function AnalyticsPage() {
                 {quality.failed > 0 && `${quality.failed} failed to place. `}
                 {quality.stale > 0 && `${quality.stale} timed out (missed end-of-call webhook).`}
               </p>
+            )}
+
+            {/* Twilio carrier status — the network's own disposition (from twilioSync). */}
+            {quality && quality.statusTotal > 0 && (
+              <>
+                <h3 className="mt-4 mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Carrier status (Twilio)
+                </h3>
+                <BarList
+                  items={[
+                    { label: "Completed", value: quality.statusCompleted, accent: "emerald" },
+                    { label: "Busy", value: quality.statusBusy, accent: "amber" },
+                    { label: "No answer", value: quality.statusNoAnswer, accent: "slate" },
+                    { label: "Failed (carrier)", value: quality.statusFailed, accent: "rose" },
+                    { label: "Canceled", value: quality.statusCanceled, accent: "slate" },
+                  ]}
+                />
+              </>
             )}
           </section>
 
