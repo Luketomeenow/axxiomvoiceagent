@@ -9,6 +9,7 @@ import { env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
 import { db, recordEvent, suppressNumber, updateCall, updateLead, type Disposition } from "./db.ts";
 import { redactPII } from "../lib/redact.ts";
+import { classifyMachineReach } from "./reach.ts";
 import { OUTBOUND_TOOL_NAMES } from "../assistant/outbound/tools.ts";
 import {
   callMetadata,
@@ -503,26 +504,35 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
     if (!existing?.disclosed_at && transcript) {
       update.disclosed_at = (existing?.started_at as string) ?? new Date().toISOString();
     }
-    // If no tool set a disposition, infer one from how the call ended.
+    // If no tool set a disposition, infer one from how the call ended. When
+    // voicemail detection misses (or is off), a machine answer ends as a plain
+    // "customer-ended-call" — so also classify voicemail/IVR from the
+    // transcript, or "Who we reached" undercounts machines to zero.
     if (!existing?.disposition) {
       const reason = (message.endedReason ?? "").toLowerCase();
+      const machine = classifyMachineReach(transcript);
       const fallback = transferred
         ? "qualified"
         : reason.includes("voicemail")
           ? "voicemail"
           : reason.includes("no-answer") || reason.includes("customer-did-not-answer") || reason.includes("busy")
             ? "no_answer"
-            : "needs_followup";
+            : reason.includes("failed-to-connect") || reason.includes("providerfault") || reason.startsWith("error")
+              ? "failed"
+              : (machine ?? "needs_followup");
       update.outcome = fallback;
       update.disposition = fallback;
       if (leadId) {
         // Don't overwrite a disposition a tool already set on the lead.
         const { data: lead } = await db().from("lead").select("disposition, attempts").eq("id", leadId).maybeSingle();
         if (lead && (lead.disposition === "calling" || lead.disposition === "queued" || lead.disposition === "new")) {
-          const leadUpdate: Record<string, unknown> = { disposition: fallback };
-          // Retry backoff: a no-answer/voicemail lead stays retryable but isn't
-          // re-dialed until the backoff elapses — spread across day-parts.
-          if (fallback === "no_answer" || fallback === "voicemail") {
+          // "failed" is a carrier/dial error, not a lead state — keep the lead
+          // retryable as no_answer instead of stranding it.
+          const leadFallback = fallback === "failed" ? "no_answer" : fallback;
+          const leadUpdate: Record<string, unknown> = { disposition: leadFallback };
+          // Retry backoff: a no-answer/voicemail/IVR lead stays retryable but
+          // isn't re-dialed until the backoff elapses — spread across day-parts.
+          if (leadFallback === "no_answer" || leadFallback === "voicemail" || leadFallback === "ivr") {
             leadUpdate.next_attempt_after = new Date(Date.now() + retryDelayMs(lead.attempts)).toISOString();
           }
           await updateLead(leadId, leadUpdate);

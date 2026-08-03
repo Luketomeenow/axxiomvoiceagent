@@ -48,10 +48,10 @@ async function fetchTwilioCall(sid: string): Promise<TwilioCall | null> {
  */
 export async function syncTwilioCosts(
   opts: { campaignId?: string; limit?: number } = {},
-): Promise<{ checked: number; updated: number }> {
+): Promise<{ checked: number; updated: number; remaining: number }> {
   if (!env.twilioAccountSid || !env.twilioAuthToken) {
     log.warn("twilioSync: TWILIO creds not set — skipping");
-    return { checked: 0, updated: 0 };
+    return { checked: 0, updated: 0, remaining: 0 };
   }
 
   let q = db()
@@ -69,23 +69,39 @@ export async function syncTwilioCosts(
   const { data } = await q;
   const rows = (data ?? []) as { id: string; provider_call_id: string }[];
 
+  // Bounded concurrency + a time box: this runs inline in a dashboard request
+  // (30s server idleTimeout), and a big backlog done serially (8s timeout per
+  // Twilio fetch) could take minutes. Whatever we don't get to is left for the
+  // next sync, same as prices Twilio hasn't finalized yet.
+  const CHUNK_SIZE = 6;
+  const deadline = Date.now() + 20_000;
+
+  let checked = 0;
   let updated = 0;
-  for (const row of rows) {
-    const tc = await fetchTwilioCall(row.provider_call_id);
-    if (!tc) continue;
-    // Twilio price is a negative string (a charge) and only appears once finalized.
-    const price = tc.price != null && tc.price !== "" ? Math.abs(Number(tc.price)) : null;
-    const patch: Record<string, unknown> = {
-      provider_status: tc.status ?? null,
-      answered_by: tc.answered_by ?? null,
-    };
-    if (Number.isFinite(price as number)) {
-      patch.telephony_cost = price;
-      updated++;
-    }
-    await db().from("call").update(patch).eq("id", row.id);
+  for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+    if (Date.now() >= deadline) break;
+    const chunk = rows.slice(i, i + CHUNK_SIZE);
+    const results = await Promise.all(
+      chunk.map(async (row) => {
+        const tc = await fetchTwilioCall(row.provider_call_id);
+        if (!tc) return false;
+        // Twilio price is a negative string (a charge) and only appears once finalized.
+        const price = tc.price != null && tc.price !== "" ? Math.abs(Number(tc.price)) : null;
+        const patch: Record<string, unknown> = {
+          provider_status: tc.status ?? null,
+          answered_by: tc.answered_by ?? null,
+        };
+        const priced = Number.isFinite(price as number);
+        if (priced) patch.telephony_cost = price;
+        await db().from("call").update(patch).eq("id", row.id);
+        return priced;
+      }),
+    );
+    checked += chunk.length;
+    updated += results.filter(Boolean).length;
   }
 
-  log.info("twilioSync complete", { checked: rows.length, updated });
-  return { checked: rows.length, updated };
+  const remaining = rows.length - checked;
+  log.info("twilioSync complete", { checked, updated, remaining });
+  return { checked, updated, remaining };
 }

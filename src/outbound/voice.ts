@@ -10,6 +10,7 @@
  */
 
 import { env } from "../config/env.ts";
+import { fetchWithTimeout } from "../lib/http.ts";
 import { log } from "../lib/logger.ts";
 import { buildVoice } from "../assistant/voicePipeline.ts";
 import { db } from "./db.ts";
@@ -52,7 +53,10 @@ export async function getElevenLabsAgentVoiceId(): Promise<string> {
 /** List the account's ElevenLabs voices (needs ELEVENLABS_API_KEY). */
 export async function listElevenLabsVoices(): Promise<VoiceOption[]> {
   if (!env.elevenLabsApiKey) throw new Error("ELEVENLABS_API_KEY not set");
-  const res = await fetch(`${ELEVENLABS_API}/voices`, { headers: { "xi-api-key": env.elevenLabsApiKey } });
+  const res = await fetchWithTimeout(`${ELEVENLABS_API}/voices`, {
+    headers: { "xi-api-key": env.elevenLabsApiKey },
+    timeoutMs: 10_000,
+  });
   if (!res.ok) throw new Error(`ElevenLabs voices ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = (await res.json()) as { voices?: Array<Record<string, unknown>> };
   return (json.voices ?? []).map((v) => ({
@@ -92,19 +96,21 @@ export async function setAgentVoice(
 
   if (target === "vapi") {
     if (!env.outboundAssistantId || !env.vapiApiKey) return { ok: false, error: "Vapi assistant not configured" };
-    const res = await fetch(`${VAPI_API}/assistant/${env.outboundAssistantId}`, {
+    const res = await fetchWithTimeout(`${VAPI_API}/assistant/${env.outboundAssistantId}`, {
       method: "PATCH",
       headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ voice: buildVoice(id) }),
+      timeoutMs: 10_000,
     });
     if (!res.ok) return { ok: false, error: `Vapi PATCH ${res.status}: ${(await res.text()).slice(0, 200)}` };
   } else {
     if (!env.elevenLabsAgentId || !env.elevenLabsApiKey) return { ok: false, error: "ElevenLabs agent not configured" };
     // Patch just the voice_id (merges — keeps model/stability/etc.).
-    const res = await fetch(`${ELEVENLABS_API}/convai/agents/${env.elevenLabsAgentId}`, {
+    const res = await fetchWithTimeout(`${ELEVENLABS_API}/convai/agents/${env.elevenLabsAgentId}`, {
       method: "PATCH",
       headers: { "xi-api-key": env.elevenLabsApiKey, "Content-Type": "application/json" },
       body: JSON.stringify({ conversation_config: { tts: { voice_id: id } } }),
+      timeoutMs: 10_000,
     });
     if (!res.ok) return { ok: false, error: `ElevenLabs PATCH ${res.status}: ${(await res.text()).slice(0, 200)}` };
   }

@@ -1,10 +1,12 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 import type { Lead } from "@/lib/types";
 import { Badge } from "./Badge";
+import ErrorChip from "./ErrorChip";
 
 const FILTERS = [
   "all",
@@ -39,25 +41,46 @@ export function LeadsTable({
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
-  async function load() {
-    let q = supabase.from("lead").select("*").order("lead_score", { ascending: false }).limit(2000);
-    if (campaignId) q = q.eq("campaign_id", campaignId);
-    if (filter !== "all") q = q.eq("disposition", filter);
-    const { data } = await q;
-    setLeads((data as Lead[]) ?? []);
-  }
+  // PostgREST caps any single request at 1000 rows (a .limit(2000) still comes
+  // back as 1000) — with 4k+ leads per campaign the table silently truncated.
+  // Fetch in 1000-row pages until a short page; the id tiebreaker keeps the
+  // pagination stable while rows change under a running campaign.
+  const load = useCallback(async () => {
+    const CHUNK = 1000;
+    const MAX_ROWS = 20000;
+    const all: Lead[] = [];
+    for (let from = 0; from < MAX_ROWS; from += CHUNK) {
+      let q = supabase
+        .from("lead")
+        .select("*")
+        .order("lead_score", { ascending: false })
+        .order("id")
+        .range(from, from + CHUNK - 1);
+      if (campaignId) q = q.eq("campaign_id", campaignId);
+      if (filter !== "all") q = q.eq("disposition", filter);
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      const page = (data as Lead[]) ?? [];
+      all.push(...page);
+      if (page.length < CHUNK) break;
+    }
+    setLeads(all);
+  }, [campaignId, filter]);
+
+  const { trigger, loadNow, error } = useDebouncedLoader(load);
 
   useEffect(() => {
-    load();
+    void loadNow();
+    // Debounced trigger: during a live campaign / bulk import, lead rows change
+    // in bursts — one coalesced (paged) refetch instead of one per event.
     const ch = supabase
       .channel("leads-table")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "lead" }, load)
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "lead" }, trigger)
       .subscribe();
     return () => {
       supabase.removeChannel(ch);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, campaignId, refreshKey]);
+  }, [filter, campaignId, refreshKey, loadNow, trigger]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return leads;
@@ -100,6 +123,7 @@ export function LeadsTable({
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 className="section-title">Leads</h2>
         <span className="text-sm text-slate-400">({filtered.length})</span>
+        <ErrorChip error={error} />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}

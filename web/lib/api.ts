@@ -1,4 +1,4 @@
-import { API_BASE, getAccessToken } from "./supabase";
+import { API_BASE, getAccessToken, supabase } from "./supabase";
 
 /** Merge the signed-in user's JWT into request headers (Authorization: Bearer). */
 async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
@@ -6,23 +6,59 @@ async function authHeaders(base: Record<string, string> = {}): Promise<Record<st
   return token ? { ...base, Authorization: `Bearer ${token}` } : base;
 }
 
+// A 401 means the session is gone (expired/revoked) — every subsequent call
+// would fail the same way, so sign out once and send the user to /login.
+let redirectingToLogin = false;
+async function handleUnauthorized(path: string): Promise<never> {
+  if (!redirectingToLogin && typeof window !== "undefined") {
+    redirectingToLogin = true;
+    await supabase.auth.signOut().catch(() => {});
+    window.location.assign("/login");
+  }
+  throw new Error(`API ${path} → 401 (session expired)`);
+}
+
+/**
+ * Shared request wrapper: every call gets a timeout (a hung backend must not
+ * hang the panel), 401s redirect to login, and network/timeout/non-JSON
+ * failures throw a labeled Error. Other non-ok statuses still RESOLVE with the
+ * parsed JSON body — callers pattern-match `{ok:false, reason}` / `{error}`.
+ */
+async function request(path: string, init: RequestInit, timeoutMs: number) {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  } catch (err) {
+    const timedOut = err instanceof Error && err.name === "TimeoutError";
+    throw new Error(`API ${path} → ${timedOut ? `timeout after ${timeoutMs}ms` : "network error"}`);
+  }
+  if (res.status === 401) return handleUnauthorized(path);
+  try {
+    return await res.json();
+  } catch {
+    throw new Error(`API ${path} → ${res.status} (invalid response)`);
+  }
+}
+
 async function get(path: string) {
-  const res = await fetch(`${API_BASE}${path}`, { headers: await authHeaders() });
-  return res.json();
+  return request(path, { headers: await authHeaders() }, 15_000);
 }
 
 async function post(path: string, body?: unknown) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    method: "POST",
-    headers: await authHeaders({ "Content-Type": "application/json" }),
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  return res.json();
+  return request(
+    path,
+    {
+      method: "POST",
+      headers: await authHeaders({ "Content-Type": "application/json" }),
+      body: body ? JSON.stringify(body) : undefined,
+    },
+    15_000,
+  );
 }
 
 async function postForm(path: string, form: FormData) {
-  const res = await fetch(`${API_BASE}${path}`, { method: "POST", headers: await authHeaders(), body: form });
-  return res.json();
+  // Uploads (lead workbooks) get a longer window.
+  return request(path, { method: "POST", headers: await authHeaders(), body: form }, 30_000);
 }
 
 export interface SheetInfo {
@@ -194,6 +230,21 @@ export interface ComplianceResponse {
   error?: string;
 }
 
+// Remaining provider balances (Twilio money, Vapi credits), from GET /outbound/balances.
+export interface ProviderBalance {
+  ok: boolean;
+  balance?: number;
+  currency?: string;
+  detail?: string;
+  error?: string;
+}
+
+export interface BalancesResponse {
+  twilio: ProviderBalance;
+  vapi: ProviderBalance;
+  fetchedAt: string;
+}
+
 export type WindowStatusGroup = {
   timezone: string;
   tzLabel: string;
@@ -219,6 +270,8 @@ export type WindowStatus = {
   groups: WindowStatusGroup[];
 };
 
+let brandListPromise: Promise<BrandInfoOption[]> | null = null;
+
 export const api = {
   analytics: (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
     const q = new URLSearchParams({ days: String(days) });
@@ -241,8 +294,17 @@ export const api = {
   ) => post(`/outbound/campaign/${id}/update`, patch),
   deleteCampaign: (id: string) => post(`/outbound/campaign/${id}/delete`),
   brandList: async (): Promise<BrandInfoOption[]> => {
-    const json = (await get(`/outbound/brand-list`)) as { brands?: BrandInfoOption[] };
-    return json.brands ?? [];
+    // BRANDS is static server config — memo the promise so the several panels
+    // that need it on page load share one request (reset on failure to allow retry).
+    if (!brandListPromise) {
+      brandListPromise = get(`/outbound/brand-list`)
+        .then((json: { brands?: BrandInfoOption[] }) => json.brands ?? [])
+        .catch((err) => {
+          brandListPromise = null;
+          throw err;
+        });
+    }
+    return brandListPromise;
   },
   // Continuous improvement (per-campaign transcript analysis + self-learning).
   analyzeCampaign: (campaignId: string) => post(`/outbound/campaign/${campaignId}/analyze`),
@@ -254,6 +316,8 @@ export const api = {
   },
   approveInsight: (id: string, approvedBy?: string) => post(`/outbound/insights/${id}/approve`, { approvedBy }),
   rejectInsight: (id: string) => post(`/outbound/insights/${id}/reject`),
+  // Remaining balances on Twilio + Vapi (cached 60s server-side).
+  balances: (): Promise<BalancesResponse> => get(`/outbound/balances`),
   // Reconcile authoritative telephony cost/status from Twilio onto call rows.
   syncTwilio: (campaignId?: string | null) =>
     post(`/outbound/twilio/sync${campaignId ? `?campaignId=${campaignId}` : ""}`),
@@ -295,7 +359,11 @@ export const api = {
     if (disposition !== "all") q.set("disposition", disposition);
     if (campaignId) q.set("campaignId", campaignId);
     if (brand) q.set("brand", brand);
-    const res = await fetch(`${API_BASE}/outbound/export?${q.toString()}`, { headers: await authHeaders() });
+    const res = await fetch(`${API_BASE}/outbound/export?${q.toString()}`, {
+      headers: await authHeaders(),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.status === 401) return handleUnauthorized("/outbound/export");
     if (!res.ok) throw new Error(`export failed: ${res.status}`);
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);

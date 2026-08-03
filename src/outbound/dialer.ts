@@ -12,6 +12,7 @@
  */
 
 import { assertOutbound, env } from "../config/env.ts";
+import { fetchWithTimeout } from "../lib/http.ts";
 import { log } from "../lib/logger.ts";
 import { checkSuppression, db, recordEvent, updateCall, updateLead, type LeadRow } from "./db.ts";
 import { toE164 } from "./phone.ts";
@@ -124,10 +125,11 @@ export function isWithinCallingWindow(timezone: string, start: number, end: numb
 }
 
 async function vapiPost(path: string, body: unknown): Promise<{ id?: string } & Record<string, unknown>> {
-  const res = await fetch(VAPI_API + path, {
+  const res = await fetchWithTimeout(VAPI_API + path, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    timeoutMs: 15_000,
   });
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};

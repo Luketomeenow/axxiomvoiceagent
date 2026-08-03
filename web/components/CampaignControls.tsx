@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { api, type BrandInfoOption, type WindowStatus } from "@/lib/api";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 import type { Campaign } from "@/lib/types";
+import ErrorChip from "./ErrorChip";
 
 /** "8:00 AM PT (in 1h 48m)"-style countdown for a window that hasn't opened. */
 function untilLabel(minutes: number): string {
@@ -33,13 +35,20 @@ export function CampaignControls({
   // Pre-start confirmation: calling-window status fetched when Start is clicked.
   const [preflight, setPreflight] = useState<WindowStatus | null>(null);
 
-  async function load() {
-    const { data } = await supabase.from("campaign").select("*").order("created_at", { ascending: false });
+  const loadCampaigns = useCallback(async () => {
+    const { data, error } = await supabase.from("campaign").select("*").order("created_at", { ascending: false });
+    if (error) throw new Error(error.message);
     const list = (data as Campaign[]) ?? [];
     setCampaigns(list);
     // Default to the most recent campaign (one campaign per region).
     if (!campaignId && list.length) onSelect(list[0].id);
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId]);
+
+  const { trigger, loadNow, error: loadError } = useDebouncedLoader(loadCampaigns);
+  // Action handlers refresh immediately after a mutation; loadNow never throws
+  // (failures land in loadError and show as a chip).
+  const load = loadNow;
 
   async function setBrand(brand: string) {
     if (!campaign) return;
@@ -55,10 +64,10 @@ export function CampaignControls({
 
   useEffect(() => {
     api.brandList().then(setBrands).catch(() => {});
-    load();
+    void loadNow();
     const ch = supabase
       .channel("campaign-changes")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "campaign" }, load)
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "campaign" }, trigger)
       .subscribe();
     return () => {
       supabase.removeChannel(ch);
@@ -82,11 +91,12 @@ export function CampaignControls({
         if (!cancelled) setPlacedThisRun(0);
         return;
       }
-      const { count } = await supabase
+      const { count, error } = await supabase
         .from("call")
         .select("id", { count: "exact", head: true })
         .eq("campaign_id", campaign.id)
         .gte("created_at", campaign.run_started_at);
+      if (error) return; // transient — keep the last value, next poll retries
       if (!cancelled) setPlacedThisRun(count ?? 0);
     }
     fetchPlaced();
@@ -205,7 +215,10 @@ export function CampaignControls({
   return (
     <div className="card card-pad flex flex-wrap items-center justify-between gap-4">
       <div>
-        <div className="label">Region / campaign</div>
+        <div className="label flex items-center gap-2">
+          Region / campaign
+          <ErrorChip error={loadError} />
+        </div>
         {editing && campaign ? (
           <div className="mt-1 flex items-center gap-2">
             <input

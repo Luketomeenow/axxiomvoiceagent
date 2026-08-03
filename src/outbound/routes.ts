@@ -18,6 +18,7 @@ import { cors } from "hono/cors";
 import * as XLSX from "xlsx";
 
 import { env } from "../config/env.ts";
+import { fetchWithTimeout } from "../lib/http.ts";
 import { log } from "../lib/logger.ts";
 import { requireAuth } from "../lib/auth.ts";
 import { rateLimit } from "../lib/rateLimit.ts";
@@ -40,6 +41,7 @@ import { toE164 } from "./phone.ts";
 import { syncTwilioCosts } from "./twilioSync.ts";
 import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
+import { getProviderBalances } from "./balances.ts";
 import { BRANDS, getBrand } from "../assistant/brands.ts";
 import { analyzeCampaign, applyInsight, rejectInsight } from "../ai/campaignInsights.ts";
 
@@ -76,33 +78,41 @@ outbound.get("/outbound/campaigns", async (c) => {
 // each with a lead count. Optionally scoped to one campaign.
 outbound.get("/outbound/brands", async (c) => {
   const campaignId = c.req.query("campaignId");
-  let q = db().from("lead").select("servicing_brand");
+  // Aggregate view (v_lead_brand_counts) instead of pulling one row per lead —
+  // the raw select was unbounded and grew with the lead table.
+  let q = db().from("v_lead_brand_counts").select("servicing_brand, leads");
   if (campaignId) q = q.eq("campaign_id", campaignId);
   const { data, error } = await q;
   if (error) return c.json({ error: error.message }, 500);
   const counts = new Map<string, number>();
-  for (const row of data ?? []) {
-    const brand = (row as { servicing_brand: string | null }).servicing_brand?.trim();
-    if (brand) counts.set(brand, (counts.get(brand) ?? 0) + 1);
+  let total = 0;
+  for (const row of (data ?? []) as Array<{ servicing_brand: string | null; leads: number }>) {
+    const brand = row.servicing_brand?.trim();
+    const n = Number(row.leads) || 0;
+    total += n;
+    if (brand) counts.set(brand, (counts.get(brand) ?? 0) + n);
   }
   const brands = [...counts.entries()]
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => a.name.localeCompare(b.name));
-  return c.json({ brands, total: data?.length ?? 0 });
+  return c.json({ brands, total });
 });
 
 outbound.get("/outbound/stats", async (c) => {
   const campaignId = c.req.query("campaignId");
-  let q = db().from("lead").select("disposition");
+  let q = db().from("v_lead_disposition_counts").select("disposition, leads");
   if (campaignId) q = q.eq("campaign_id", campaignId);
   const { data, error } = await q;
   if (error) return c.json({ error: error.message }, 500);
   const counts: Record<string, number> = {};
-  for (const row of data ?? []) {
-    const d = (row as { disposition: string }).disposition || "new";
-    counts[d] = (counts[d] ?? 0) + 1;
+  let total = 0;
+  for (const row of (data ?? []) as Array<{ disposition: string | null; leads: number }>) {
+    const d = row.disposition || "new";
+    const n = Number(row.leads) || 0;
+    counts[d] = (counts[d] ?? 0) + n;
+    total += n;
   }
-  return c.json({ counts, total: data?.length ?? 0 });
+  return c.json({ counts, total });
 });
 
 // --- Analytics (tracking dashboard) ---------------------------------------
@@ -165,6 +175,12 @@ outbound.get("/outbound/analytics", async (c) => {
     },
     days,
   });
+});
+
+// Remaining balances on the telephony/voice providers (Twilio + Vapi), for the
+// analytics page. Cached 60s server-side; each provider degrades independently.
+outbound.get("/outbound/balances", async (c) => {
+  return c.json(await getProviderBalances());
 });
 
 // Re-apply dead-lettered writes (outbound.failed_op) so lost lead/call/event
@@ -413,10 +429,15 @@ outbound.post("/outbound/campaign/:id/delete", async (c) => {
 outbound.get("/outbound/el-agent/signed-url", async (c) => {
   if (!env.elevenLabsApiKey) return c.json({ ok: false, error: "ELEVENLABS_API_KEY not set" }, 400);
   if (!env.elevenLabsAgentId) return c.json({ ok: false, error: "ELEVENLABS_AGENT_ID not set" }, 400);
-  const res = await fetch(
-    `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${env.elevenLabsAgentId}`,
-    { headers: { "xi-api-key": env.elevenLabsApiKey } },
-  );
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${env.elevenLabsAgentId}`,
+      { headers: { "xi-api-key": env.elevenLabsApiKey }, timeoutMs: 10_000 },
+    );
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 502);
+  }
   if (!res.ok) return c.json({ ok: false, error: `ElevenLabs ${res.status}` }, 502);
   const json = (await res.json()) as { signed_url?: string };
   return c.json({ ok: true, agentId: env.elevenLabsAgentId, signedUrl: json.signed_url });
@@ -441,7 +462,8 @@ outbound.post("/outbound/voice", async (c) => {
     .catch(() => ({}) as { voiceId?: string; target?: VoiceTarget });
   if (!body.voiceId) return c.json({ ok: false, error: "voiceId is required" }, 400);
   const target: VoiceTarget = body.target === "vapi" ? "vapi" : "elevenlabs";
-  const result = await setAgentVoice(body.voiceId, target);
+  // setAgentVoice's upstream PATCH can throw on timeout — surface as a clean 400.
+  const result = await setAgentVoice(body.voiceId, target).catch((err) => ({ ok: false, error: String(err) }));
   log.info("Voice switch requested", { voiceId: body.voiceId, target, ok: result.ok });
   return c.json(result, result.ok ? 200 : 400);
 });
@@ -558,22 +580,34 @@ outbound.get("/outbound/export", async (c) => {
   const brand = c.req.query("brand"); // scope to one servicing brand; omit for all
   const format = (c.req.query("format") || "xlsx").toLowerCase();
 
-  let query = db().from("lead").select(EXPORT_COLUMNS.join(","));
-  if (campaignId) query = query.eq("campaign_id", campaignId);
-  if (brand) {
-    // Allow comma-separated brands, e.g. ?brand=AmeriTex,AmeriTex West
-    const list = brand.split(",").map((s) => s.trim()).filter(Boolean);
-    query = list.length > 1 ? query.in("servicing_brand", list) : query.eq("servicing_brand", list[0]);
-  }
-  if (disposition) {
-    // Allow comma-separated dispositions, e.g. ?disposition=qualified,needs_followup
-    const list = disposition.split(",").map((s) => s.trim()).filter(Boolean);
-    query = list.length > 1 ? query.in("disposition", list) : query.eq("disposition", list[0]);
-  }
-  const { data, error } = await query;
-  if (error) return c.json({ error: error.message }, 500);
+  const buildQuery = (from: number, to: number) => {
+    let query = db().from("lead").select(EXPORT_COLUMNS.join(",")).order("id").range(from, to);
+    if (campaignId) query = query.eq("campaign_id", campaignId);
+    if (brand) {
+      // Allow comma-separated brands, e.g. ?brand=AmeriTex,AmeriTex West
+      const list = brand.split(",").map((s) => s.trim()).filter(Boolean);
+      query = list.length > 1 ? query.in("servicing_brand", list) : query.eq("servicing_brand", list[0]);
+    }
+    if (disposition) {
+      // Allow comma-separated dispositions, e.g. ?disposition=qualified,needs_followup
+      const list = disposition.split(",").map((s) => s.trim()).filter(Boolean);
+      query = list.length > 1 ? query.in("disposition", list) : query.eq("disposition", list[0]);
+    }
+    return query;
+  };
 
-  const rows = (data ?? []) as unknown as Record<string, unknown>[];
+  // PostgREST caps a single request at 1000 rows — an unpaginated export was
+  // silently truncating anything larger. Page until a short page.
+  const CHUNK = 1000;
+  const MAX_EXPORT_ROWS = 100_000;
+  const rows: Record<string, unknown>[] = [];
+  for (let from = 0; from < MAX_EXPORT_ROWS; from += CHUNK) {
+    const { data, error } = await buildQuery(from, from + CHUNK - 1);
+    if (error) return c.json({ error: error.message }, 500);
+    const page = (data ?? []) as unknown as Record<string, unknown>[];
+    rows.push(...page);
+    if (page.length < CHUNK) break;
+  }
   const worksheet = XLSX.utils.json_to_sheet(rows, { header: EXPORT_COLUMNS as unknown as string[] });
   const stamp = new Date().toISOString().slice(0, 10);
   const slug = (s: string) => s.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "").toLowerCase();

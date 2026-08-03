@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 import type { Call, CallEvent } from "@/lib/types";
+import ErrorChip from "./ErrorChip";
 
 // Active call joined with its campaign name + lead brand (PostgREST embeds).
 type ActiveCall = Call & {
@@ -19,8 +21,6 @@ export function LiveMonitor() {
   const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
   const [events, setEvents] = useState<Record<string, CallEvent[]>>({});
   const [ending, setEnding] = useState<Record<string, boolean>>({});
-  const eventsRef = useRef(events);
-  eventsRef.current = events;
 
   async function handleEnd(callId: string) {
     setEnding((m) => ({ ...m, [callId]: true }));
@@ -38,38 +38,56 @@ export function LiveMonitor() {
     }
   }
 
-  async function loadActive() {
+  const loadActive = useCallback(async () => {
     // Only consider calls started recently. Without webhooks a dead call can be
     // left "ringing" forever; this keeps the monitor honest even if one slips through.
     const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("call")
       .select("*, campaign:campaign_id(name), lead:lead_id(servicing_brand,building_name)")
       .in("status", ["queued", "ringing", "in-progress"])
       .gte("created_at", cutoff)
       .order("created_at", { ascending: false });
+    if (error) throw new Error(error.message);
     setActiveCalls((data as ActiveCall[]) ?? []);
-  }
+  }, []);
+
+  const { trigger, loadNow, error } = useDebouncedLoader(loadActive);
+
+  // Transcript events stream one row per spoken line — buffer them and flush on
+  // a short timer so the whole monitor re-renders once per beat, not per line.
+  const pendingEventsRef = useRef<CallEvent[]>([]);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    loadActive();
+    void loadNow();
+    const flush = () => {
+      flushTimerRef.current = null;
+      const batch = pendingEventsRef.current;
+      pendingEventsRef.current = [];
+      if (!batch.length) return;
+      setEvents((prev) => {
+        const next = { ...prev };
+        for (const ev of batch) {
+          if (!ev.call_id) continue;
+          next[ev.call_id] = [...(next[ev.call_id] ?? []), ev].slice(-40);
+        }
+        return next;
+      });
+    };
     const ch = supabase
       .channel("live-monitor")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, loadActive)
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, trigger)
       .on("postgres_changes", { event: "INSERT", schema: "outbound", table: "call_event" }, (payload) => {
-        const ev = payload.new as CallEvent;
-        if (!ev.call_id) return;
-        const next = { ...eventsRef.current };
-        const list = next[ev.call_id] ? [...next[ev.call_id]] : [];
-        list.push(ev);
-        next[ev.call_id] = list.slice(-40);
-        setEvents(next);
+        pendingEventsRef.current.push(payload.new as CallEvent);
+        if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flush, 300);
       })
       .subscribe();
     return () => {
       supabase.removeChannel(ch);
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
     };
-  }, []);
+  }, [loadNow, trigger]);
 
   return (
     <div className="card card-pad">
@@ -77,6 +95,7 @@ export function LiveMonitor() {
         <span className={`h-2.5 w-2.5 rounded-full ${activeCalls.length ? "animate-pulse bg-emerald-400" : "bg-slate-500"}`} />
         <h2 className="section-title">Live calls</h2>
         <span className="text-sm text-slate-400">({activeCalls.length} active)</span>
+        <ErrorChip error={error} />
       </div>
       {activeCalls.length === 0 ? (
         <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-400">

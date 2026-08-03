@@ -1,38 +1,51 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 
 /**
  * Compact header indicator: how many calls are live right now, refreshed via
- * Supabase Realtime. Doubles as a quick "is the dashboard connected?" signal.
+ * Supabase Realtime. Doubles as a quick "is the dashboard connected?" signal —
+ * a failed refresh shows "offline?" instead of masquerading as "Idle".
  */
 export function LiveStatus() {
   const [active, setActive] = useState(0);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-      const { count } = await supabase
-        .from("call")
-        .select("id", { count: "exact", head: true })
-        .in("status", ["queued", "ringing", "in-progress"])
-        .gte("created_at", cutoff);
-      if (!cancelled) setActive(count ?? 0);
-    }
-    load();
-    const ch = supabase
-      .channel("live-status")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, load)
-      .subscribe();
-    return () => {
-      cancelled = true;
-      supabase.removeChannel(ch);
-    };
+  const load = useCallback(async () => {
+    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
+    const { count, error } = await supabase
+      .from("call")
+      .select("id", { count: "exact", head: true })
+      .in("status", ["queued", "ringing", "in-progress"])
+      .gte("created_at", cutoff);
+    if (error) throw new Error(error.message);
+    setActive(count ?? 0);
   }, []);
 
+  const { trigger, loadNow, error } = useDebouncedLoader(load);
+
+  useEffect(() => {
+    void loadNow();
+    const ch = supabase
+      .channel("live-status")
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, trigger)
+      .subscribe();
+    return () => {
+      supabase.removeChannel(ch);
+    };
+  }, [loadNow, trigger]);
+
   const live = active > 0;
+
+  if (error) {
+    return (
+      <div title={error} className="chip border-amber-500/40 bg-amber-500/10 text-amber-300">
+        <span className="h-2 w-2 rounded-full bg-amber-400" />
+        offline?
+      </div>
+    );
+  }
 
   return (
     <div

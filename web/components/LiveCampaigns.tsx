@@ -2,13 +2,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
+import ErrorChip from "./ErrorChip";
 import type { Campaign } from "@/lib/types";
 
 /**
  * Live monitor of every RUNNING campaign with realtime call counts. Appears as
- * soon as a campaign is started and updates via Supabase Realtime (campaign +
- * call changes) plus a 5s poll. Per campaign it shows calls dialed this run
- * (vs. the per-run budget), calls active right now, and qualified leads.
+ * soon as a campaign is started; updates via Supabase Realtime (campaign +
+ * call changes, debounced) with a slow safety poll covering dropped websockets.
+ * Per campaign it shows calls dialed this run (vs. the per-run budget), calls
+ * active right now, and qualified leads — read from outbound.v_campaign_live in
+ * one query instead of per-campaign counts.
  */
 interface Row {
   campaign: Campaign;
@@ -17,72 +21,62 @@ interface Row {
   qualified: number;
 }
 
+interface LiveRow {
+  campaign_id: string;
+  dialed_this_run: number;
+  active_calls: number;
+  qualified: number;
+}
+
 export function LiveCampaigns({ onSelect }: { onSelect?: (id: string) => void }) {
   const [rows, setRows] = useState<Row[]>([]);
 
   const load = useCallback(async () => {
-    const { data: camps } = await supabase
+    const { data: camps, error: campErr } = await supabase
       .from("campaign")
       .select("*")
       .eq("status", "running")
       .order("updated_at", { ascending: false });
+    if (campErr) throw new Error(campErr.message);
     const running = (camps as Campaign[]) ?? [];
     if (!running.length) {
       setRows([]);
       return;
     }
-    const ids = running.map((c) => c.id);
 
-    // Active (in-flight) calls + qualified leads across the running campaigns,
-    // tallied client-side so it's just two queries regardless of campaign count.
-    const [{ data: active }, { data: quals }] = await Promise.all([
-      supabase.from("call").select("campaign_id").in("status", ["queued", "ringing", "in-progress"]).in("campaign_id", ids),
-      supabase.from("lead").select("campaign_id").eq("disposition", "qualified").in("campaign_id", ids),
-    ]);
-    const tally = (arr: { campaign_id: string | null }[] | null) => {
-      const m = new Map<string, number>();
-      for (const r of arr ?? []) if (r.campaign_id) m.set(r.campaign_id, (m.get(r.campaign_id) ?? 0) + 1);
-      return m;
-    };
-    const activeBy = tally(active as { campaign_id: string | null }[] | null);
-    const qualBy = tally(quals as { campaign_id: string | null }[] | null);
-
-    // Calls dialed since each run started (= dial attempts this run).
-    const dialed = await Promise.all(
-      running.map(async (c) => {
-        if (!c.run_started_at) return 0;
-        const { count } = await supabase
-          .from("call")
-          .select("id", { count: "exact", head: true })
-          .eq("campaign_id", c.id)
-          .gte("created_at", c.run_started_at);
-        return count ?? 0;
-      }),
-    );
+    const { data: live, error: liveErr } = await supabase
+      .from("v_campaign_live")
+      .select("campaign_id, dialed_this_run, active_calls, qualified")
+      .in("campaign_id", running.map((c) => c.id));
+    if (liveErr) throw new Error(liveErr.message);
+    const liveBy = new Map(((live as LiveRow[]) ?? []).map((r) => [r.campaign_id, r]));
 
     setRows(
-      running.map((c, i) => ({
+      running.map((c) => ({
         campaign: c,
-        dialedThisRun: dialed[i],
-        active: activeBy.get(c.id) ?? 0,
-        qualified: qualBy.get(c.id) ?? 0,
+        dialedThisRun: liveBy.get(c.id)?.dialed_this_run ?? 0,
+        active: liveBy.get(c.id)?.active_calls ?? 0,
+        qualified: liveBy.get(c.id)?.qualified ?? 0,
       })),
     );
   }, []);
 
+  const { trigger, loadNow, error } = useDebouncedLoader(load);
+
   useEffect(() => {
-    load();
+    void loadNow();
     const ch = supabase
       .channel("live-campaigns")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "campaign" }, load)
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, load)
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "campaign" }, trigger)
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, trigger)
       .subscribe();
-    const t = setInterval(load, 5000);
+    // Realtime is the primary signal — the slow poll only covers a dropped websocket.
+    const t = setInterval(trigger, 30_000);
     return () => {
       supabase.removeChannel(ch);
       clearInterval(t);
     };
-  }, [load]);
+  }, [loadNow, trigger]);
 
   if (!rows.length) return null; // nothing running — keep the dashboard clean
 
@@ -97,6 +91,7 @@ export function LiveCampaigns({ onSelect }: { onSelect?: (id: string) => void })
           <span className="text-sm font-normal text-slate-500">
             {rows.length} running · {totalActive} call{totalActive === 1 ? "" : "s"} active
           </span>
+          <ErrorChip error={error} />
         </h2>
       </div>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

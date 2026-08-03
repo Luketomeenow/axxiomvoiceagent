@@ -33,11 +33,21 @@ function getAuthClient(): SupabaseClient | undefined {
   return authClient;
 }
 
+// Positive-result token cache: the dashboard fires many API calls with the same
+// JWT, and validating each one is a network round-trip to Supabase Auth that
+// gates the whole request. Trade-off: a revoked-but-unexpired token stays
+// honored for up to the TTL — acceptable for an invite-only operator dashboard.
+const AUTH_CACHE_TTL_MS = 60_000;
+const AUTH_CACHE_MAX = 500;
+const AUTH_TIMEOUT_MS = 8_000;
+const authCache = new Map<string, number>(); // sha256(token) -> expiresAt
+
 /**
  * Hono middleware: require a valid Supabase user JWT on the request. Reads
- * `Authorization: Bearer <token>`, validates it with Supabase, and 401s on a
- * missing/invalid token. Preflight (OPTIONS) passes through so CORS still works.
- * Fails closed (503) if the backend isn't configured to validate tokens.
+ * `Authorization: Bearer <token>`, validates it with Supabase (cached 60s per
+ * token, 8s validation timeout), and 401s on a missing/invalid token.
+ * Preflight (OPTIONS) passes through so CORS still works. Fails closed (503)
+ * if the backend isn't configured to validate tokens or validation times out.
  */
 export const requireAuth: MiddlewareHandler = async (c, next) => {
   if (c.req.method === "OPTIONS") return next();
@@ -52,11 +62,30 @@ export const requireAuth: MiddlewareHandler = async (c, next) => {
   const token = header.toLowerCase().startsWith("bearer ") ? header.slice(7).trim() : "";
   if (!token) return c.json({ error: "unauthorized" }, 401);
 
-  const { data, error } = await client.auth.getUser(token);
+  const key = createHash("sha256").update(token).digest("hex");
+  const cachedUntil = authCache.get(key);
+  if (cachedUntil && cachedUntil > Date.now()) return next();
+
+  let result: Awaited<ReturnType<typeof client.auth.getUser>>;
+  try {
+    result = await Promise.race([
+      client.auth.getUser(token),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error(`auth timeout after ${AUTH_TIMEOUT_MS}ms`)), AUTH_TIMEOUT_MS),
+      ),
+    ]);
+  } catch (err) {
+    log.error("requireAuth: token validation failed", { err: String(err) });
+    return c.json({ error: "auth timeout" }, 503);
+  }
+
+  const { data, error } = result;
   if (error || !data?.user) {
     log.warn("requireAuth: rejected request — invalid token", { err: error?.message });
     return c.json({ error: "unauthorized" }, 401);
   }
 
+  if (authCache.size >= AUTH_CACHE_MAX) authCache.clear();
+  authCache.set(key, Date.now() + AUTH_CACHE_TTL_MS);
   return next();
 };

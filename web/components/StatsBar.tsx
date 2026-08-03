@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
+import ErrorChip from "./ErrorChip";
 
 // Disposition breakdown order + accent dot color.
 const BREAKDOWN: { key: string; label: string; dot: string }[] = [
@@ -21,22 +23,31 @@ export function StatsBar({ refreshKey, campaignId }: { refreshKey: number; campa
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);
 
+  // Aggregate view instead of one row per lead: the raw select was unbounded
+  // AND silently capped at PostgREST's 1000-row default, so totals were wrong
+  // past 1000 leads. The view returns at most campaigns × dispositions rows.
+  const load = useCallback(async () => {
+    let q = supabase.from("v_lead_disposition_counts").select("disposition, leads");
+    if (campaignId) q = q.eq("campaign_id", campaignId);
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    const c: Record<string, number> = {};
+    let sum = 0;
+    for (const r of (data as { disposition: string | null; leads: number }[]) ?? []) {
+      const d = r.disposition || "new";
+      const n = Number(r.leads) || 0;
+      c[d] = (c[d] ?? 0) + n;
+      sum += n;
+    }
+    setCounts(c);
+    setTotal(sum);
+  }, [campaignId]);
+
+  const { loadNow, error } = useDebouncedLoader(load);
+
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      let q = supabase.from("lead").select("disposition");
-      if (campaignId) q = q.eq("campaign_id", campaignId);
-      const { data } = await q;
-      if (cancelled || !data) return;
-      const c: Record<string, number> = {};
-      for (const r of data) c[r.disposition] = (c[r.disposition] ?? 0) + 1;
-      setCounts(c);
-      setTotal(data.length);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [refreshKey, campaignId]);
+    void loadNow();
+  }, [refreshKey, campaignId, loadNow]);
 
   const qualified = counts.qualified ?? 0;
   const inProgress = (counts.calling ?? 0) + (counts.queued ?? 0);
@@ -57,7 +68,10 @@ export function StatsBar({ refreshKey, campaignId }: { refreshKey: number; campa
 
       <div className="card card-pad">
         <div className="mb-3 flex items-center justify-between">
-          <span className="label">Disposition breakdown</span>
+          <span className="label flex items-center gap-2">
+            Disposition breakdown
+            <ErrorChip error={error} />
+          </span>
           <span className="text-xs text-slate-500">{total} leads</span>
         </div>
         <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-5">

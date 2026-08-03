@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 import type { Call } from "@/lib/types";
+import ErrorChip from "./ErrorChip";
 import { TranscriptViewer } from "./TranscriptViewer";
 
 const PAGE_SIZE = 8;
@@ -24,25 +26,35 @@ export function RecentCalls() {
   const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("call")
       .select("*, campaign:campaign_id(name), lead:lead_id(servicing_brand,building_name,contact_name)")
       .eq("status", "ended")
       .order("ended_at", { ascending: false })
       .limit(60);
+    if (error) throw new Error(error.message);
     setCalls((data as RecentCall[]) ?? []);
   }, []);
 
+  const { trigger, loadNow, error } = useDebouncedLoader(load);
+
   useEffect(() => {
-    load();
+    void loadNow();
     const ch = supabase
       .channel("recent-calls")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, load)
+      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, (payload) => {
+        // The list only shows ENDED calls — skip the constant status churn of
+        // in-flight calls (queued → ringing → in-progress) and refetch only
+        // when a call could have entered the list.
+        const next = payload.new as { status?: string } | null;
+        if (payload.eventType === "UPDATE" && next?.status && next.status !== "ended") return;
+        trigger();
+      })
       .subscribe();
     return () => {
       supabase.removeChannel(ch);
     };
-  }, [load]);
+  }, [loadNow, trigger]);
 
   const fmtDuration = (s: number | null) => {
     if (!s) return "—";
@@ -74,7 +86,10 @@ export function RecentCalls() {
   return (
     <div className="card card-pad">
       <div className="mb-3 flex items-center justify-between gap-2">
-        <h2 className="section-title">Recent calls</h2>
+        <h2 className="section-title flex items-center gap-2">
+          Recent calls
+          <ErrorChip error={error} />
+        </h2>
         {calls.length > 0 && <span className="text-xs text-slate-400">{calls.length} total</span>}
       </div>
 

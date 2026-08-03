@@ -29,6 +29,10 @@ export const env = {
 
   // Vapi
   vapiApiKey: str("VAPI_API_KEY"),
+  // Optional: the org JWT secret from the Vapi dashboard (Org Settings). Lets
+  // the analytics page read the remaining Vapi credits — the org endpoint
+  // rejects plain API keys.
+  vapiJwtSecret: str("VAPI_JWT_SECRET"),
   vapiAssistantId: str("VAPI_ASSISTANT_ID"),
   vapiPhoneNumberId: str("VAPI_PHONE_NUMBER_ID"),
   vapiServerSecret: str("VAPI_SERVER_SECRET"),
@@ -62,9 +66,12 @@ export const env = {
   outboundLeadTable: str("OUTBOUND_LEAD_TABLE", "lead"),
   outboundCallTable: str("OUTBOUND_CALL_TABLE", "call"),
   outboundSchema: str("OUTBOUND_SCHEMA", "outbound"),
-  // Voicemail detection misclassifies live humans (esp. with background noise)
-  // and hangs up. Off by default so test calls don't drop; enable for the campaign.
-  enableVoicemailDetection: bool("ENABLE_VOICEMAIL_DETECTION", false),
+  // Voicemail detection (Vapi's transcription-based provider — see
+  // buildOutboundAssistantConfig). ON by default for the campaign: without it,
+  // machine answers look like live conversations and reach analytics undercount
+  // voicemail to zero. Set false while testing conversations if a live test
+  // call ever gets misclassified and dropped.
+  enableVoicemailDetection: bool("ENABLE_VOICEMAIL_DETECTION", true),
 
   // GoHighLevel
   ghlAccessToken: str("GHL_ACCESS_TOKEN") || str("GHL_API_KEY"),

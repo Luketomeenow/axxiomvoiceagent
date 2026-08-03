@@ -527,10 +527,14 @@ select
   brand,
   count(*)                                                                     as calls,
   count(*) filter (where status = 'ended')                                    as completed,
-  -- connected = a real conversation happened (a person/agent ended it, or transfer)
-  count(*) filter (where ended_by in ('customer', 'agent') or transferred_to_human) as connected,
+  -- connected = a real conversation happened (a person/agent ended it, or transfer).
+  -- Calls classified as voicemail/IVR (detection, the agent's disposition, or the
+  -- end-of-call transcript heuristic) are machines, not conversations.
+  count(*) filter (where (ended_by in ('customer', 'agent') or transferred_to_human)
+                     and coalesce(outcome, '') not in ('voicemail', 'ivr'))    as connected,
   round(avg(duration_seconds) filter (where duration_seconds is not null), 1) as avg_duration_seconds,
-  round(avg(duration_seconds) filter (where ended_by in ('customer', 'agent') or transferred_to_human), 1) as avg_talk_seconds,
+  round(avg(duration_seconds) filter (where (ended_by in ('customer', 'agent') or transferred_to_human)
+                                        and coalesce(outcome, '') not in ('voicemail', 'ivr')), 1) as avg_talk_seconds,
   round(avg(sentiment_score) filter (where sentiment_score is not null), 3)   as avg_sentiment,
   count(*) filter (where transferred_to_human)                                as transferred,
   count(*) filter (where outcome = 'voicemail')                               as voicemail,
@@ -558,7 +562,8 @@ select
   campaign_id,
   extract(hour from (started_at at time zone 'America/Los_Angeles'))::int      as hour_pt,
   count(*)                                                                     as calls,
-  count(*) filter (where ended_by in ('customer', 'agent') or transferred_to_human) as connected,
+  count(*) filter (where (ended_by in ('customer', 'agent') or transferred_to_human)
+                     and coalesce(outcome, '') not in ('voicemail', 'ivr'))    as connected,
   count(*) filter (where disposition = 'qualified')                           as qualified,
   count(*) filter (where disposition in ('voicemail', 'ivr'))                 as reached_machine
 from outbound.call
@@ -567,3 +572,45 @@ group by campaign_id, hour_pt;
 
 grant select on outbound.v_call_hourly to authenticated, service_role;
 revoke select on outbound.v_call_hourly from anon;
+
+-- ===========================================================================
+-- DASHBOARD AGGREGATE VIEWS (additive, safe to re-run)
+-- The overview dashboard previously pulled raw lead rows client-side to count
+-- them (unbounded — and silently WRONG past PostgREST's 1000-row default cap)
+-- and ran one count query per running campaign every few seconds. These tiny
+-- pre-aggregated views replace those scans: StatsBar + GET /outbound/stats read
+-- v_lead_disposition_counts, GET /outbound/brands reads v_lead_brand_counts,
+-- and LiveCampaigns reads v_campaign_live in a single query.
+-- ===========================================================================
+
+create or replace view outbound.v_lead_disposition_counts with (security_invoker = on) as
+select campaign_id, disposition, count(*)::int as leads
+from outbound.lead
+group by campaign_id, disposition;
+
+create or replace view outbound.v_lead_brand_counts with (security_invoker = on) as
+select campaign_id, servicing_brand, count(*)::int as leads
+from outbound.lead
+where servicing_brand is not null and servicing_brand <> ''
+group by campaign_id, servicing_brand;
+
+-- Live stats for RUNNING campaigns. Scalar subqueries avoid lead×call join
+-- fan-out; the result is at most one row per running campaign.
+create or replace view outbound.v_campaign_live with (security_invoker = on) as
+select
+  c.id as campaign_id,
+  (select count(*)::int from outbound.call k
+    where k.campaign_id = c.id and c.run_started_at is not null
+      and k.created_at >= c.run_started_at)                          as dialed_this_run,
+  (select count(*)::int from outbound.call k
+    where k.campaign_id = c.id
+      and k.status in ('queued', 'ringing', 'in-progress'))          as active_calls,
+  (select count(*)::int from outbound.lead l
+    where l.campaign_id = c.id and l.disposition = 'qualified')      as qualified
+from outbound.campaign c
+where c.status = 'running';
+
+grant select on outbound.v_lead_disposition_counts, outbound.v_lead_brand_counts,
+               outbound.v_campaign_live to authenticated, service_role;
+revoke select on outbound.v_lead_disposition_counts, outbound.v_lead_brand_counts,
+               outbound.v_campaign_live from anon;

@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import {
   api,
   type AnalyticsResponse,
+  type BalancesResponse,
   type ComplianceResponse,
   type FunnelRow,
   type QualityRow,
@@ -97,6 +98,13 @@ export default function AnalyticsPage() {
   const [compPage, setCompPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [balances, setBalances] = useState<BalancesResponse | null>(null);
+
+  // Provider balances aren't campaign-scoped — fetch once per page load
+  // (server caches 60s). A failure just leaves the tiles in their n/a state.
+  useEffect(() => {
+    api.balances().then(setBalances).catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -240,13 +248,15 @@ export default function AnalyticsPage() {
             <h2 className="section-title">Cost &amp; reach</h2>
             <span className="text-xs text-slate-500">Vapi (AI) + Twilio (telephony)</span>
           </div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Mini label="Total cost" value={fmtMoney(quality?.totalCost ?? 0)} />
             <Mini label="Cost / call" value={costPerCall == null ? "—" : fmtMoney4(costPerCall)} />
             <Mini label="Cost / qualified" value={costPerQualified == null ? "—" : fmtMoney(costPerQualified)} />
             <Mini label="Connect rate" value={`${connectRate}%`} />
             <Mini label="AI cost (Vapi)" value={fmtMoney(quality?.vapiCost ?? 0)} />
             <Mini label="Telephony (Twilio)" value={fmtMoney(quality?.telephonyCost ?? 0)} />
+            <BalanceTile name="Twilio balance" b={balances?.twilio} />
+            <BalanceTile name="Vapi credits" b={balances?.vapi} />
           </div>
           {quality && quality.calls > 0 && quality.telephonyCost === 0 && (
             <p className="mt-3 text-xs text-amber-300">
@@ -542,6 +552,37 @@ function Mini({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl border border-white/10 bg-ink/40 p-3">
       <div className="text-xl font-bold tabular-nums">{value}</div>
       <div className="text-xs text-slate-400">{label}</div>
+    </div>
+  );
+}
+
+/**
+ * Remaining balance on a provider account. Goes amber under $25 and red under
+ * $10 so a campaign doesn't die mid-run on an empty wallet; shows "n/a" with
+ * the reason on hover when the provider doesn't expose a balance.
+ */
+function BalanceTile({ name, b }: { name: string; b?: import("@/lib/api").ProviderBalance }) {
+  if (!b || !b.ok || b.balance == null) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-ink/40 p-3" title={b?.error ?? "loading…"}>
+        <div className="text-xl font-bold text-slate-500">n/a</div>
+        <div className="text-xs text-slate-400">{name}</div>
+        {b?.error && <div className="mt-0.5 truncate text-[10px] text-slate-500">{b.error}</div>}
+      </div>
+    );
+  }
+  const tone =
+    b.balance < 10
+      ? "border-rose-500/40 bg-rose-500/[0.07] text-rose-300"
+      : b.balance < 25
+        ? "border-amber-500/40 bg-amber-500/[0.07] text-amber-300"
+        : "border-emerald-500/30 bg-emerald-500/[0.05] text-emerald-300";
+  return (
+    <div className={`rounded-xl border p-3 ${tone}`}>
+      <div className="text-xl font-bold tabular-nums">${b.balance.toFixed(2)}</div>
+      <div className="text-xs text-slate-400">
+        {name} remaining{b.detail ? ` · ${b.detail}` : ""}
+      </div>
     </div>
   );
 }
