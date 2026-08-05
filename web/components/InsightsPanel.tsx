@@ -1,46 +1,62 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type BrandInfoOption } from "@/lib/api";
 import type { CampaignInsight } from "@/lib/types";
 
 /**
- * Per-campaign continuous improvement. Shows the AI's analysis of recent call
- * transcripts: a detailed improvement report + a proposed improved system prompt.
- * Self-learning is human-gated — Approve applies the proposed prompt to the live
- * brand agent (blocked if it dropped a required compliance disclosure); or copy
- * the prompt to iterate on it yourself in Claude.
+ * Per-BRAND continuous improvement. Shows the AI's analysis of the brand's
+ * most recent call transcripts (last 50 ended calls, across campaigns): a
+ * detailed improvement report + a proposed improved system prompt for that
+ * brand's assistant. Self-learning is human-gated — Approve applies the
+ * proposed prompt to the live brand agent (blocked if it dropped a required
+ * compliance disclosure); or copy the prompt to iterate on it yourself.
  */
-export function InsightsPanel({ campaignId }: { campaignId: string | null }) {
+export function InsightsPanel() {
+  const [brands, setBrands] = useState<BrandInfoOption[]>([]);
+  const [brand, setBrand] = useState(""); // slug; "default" = generic/fallback agent
   const [insights, setInsights] = useState<CampaignInsight[]>([]);
   const [busy, setBusy] = useState(false);
   const [openReport, setOpenReport] = useState<Record<string, boolean>>({});
   const [openPrompt, setOpenPrompt] = useState<Record<string, boolean>>({});
   const [msg, setMsg] = useState<string | null>(null);
+  // Current selection, readable from long-lived poll closures so a poll for one
+  // brand can't clobber the list after the operator switches to another.
+  const brandRef = useRef(brand);
+  brandRef.current = brand;
+
+  useEffect(() => {
+    api
+      .brandList()
+      .then((list) => {
+        setBrands(list);
+        setBrand((b) => b || list[0]?.slug || "default");
+      })
+      .catch(() => setBrand((b) => b || "default"));
+  }, []);
 
   const load = useCallback(async () => {
-    if (!campaignId) {
-      setInsights([]);
-      return;
-    }
+    if (!brand) return;
     try {
-      setInsights(await api.campaignInsights(campaignId));
+      setInsights(await api.brandInsights(brand));
     } catch {
       setInsights([]);
     }
-  }, [campaignId]);
+  }, [brand]);
 
   useEffect(() => {
+    setMsg(null);
     load();
   }, [load]);
 
   async function analyze() {
-    if (!campaignId) return;
+    if (!brand) return;
+    const slug = brand;
     setBusy(true);
     setMsg(null);
     const beforeId = insights[0]?.id ?? null;
     try {
-      const res = await api.analyzeCampaign(campaignId);
+      const res = await api.analyzeBrand(slug);
       if (!res?.ok) {
         setMsg(res?.error ?? "Analysis unavailable.");
         setBusy(false);
@@ -48,10 +64,11 @@ export function InsightsPanel({ campaignId }: { campaignId: string | null }) {
       }
       // The server runs the analysis in the background (1–2 min). Poll for the
       // new insight row instead of holding the request open (which would time out).
-      setMsg("Analyzing recent transcripts… this takes a minute or two. You can leave this page.");
+      setMsg("Analyzing the brand's last 50 calls… this takes a minute or two. You can leave this page.");
       const deadline = Date.now() + 3 * 60_000;
       const tick = async () => {
-        const list = await api.campaignInsights(campaignId).catch(() => null);
+        if (brandRef.current !== slug) return; // operator switched brands — stop
+        const list = await api.brandInsights(slug).catch(() => null);
         if (list && (list[0]?.id ?? null) !== beforeId) {
           setInsights(list);
           setMsg("Analysis ready.");
@@ -104,29 +121,40 @@ export function InsightsPanel({ campaignId }: { campaignId: string | null }) {
 
   return (
     <div className="card card-pad">
-      <div className="mb-3 flex items-center justify-between gap-2">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="section-title">Call analysis &amp; improvements</h2>
           <p className="text-xs text-slate-400">
-            AI reviews recent transcripts and proposes prompt improvements. Auto-runs every N calls; or analyze now.
+            AI reviews the brand&apos;s last 50 calls and proposes prompt improvements for that brand&apos;s agent.
+            Auto-runs as calls accumulate; or analyze now.
           </p>
         </div>
-        <button onClick={analyze} disabled={!campaignId || busy} className="btn btn-primary btn-xs disabled:opacity-40">
-          {busy ? "Analyzing…" : "Analyze now"}
-        </button>
+        <div className="flex items-center gap-2">
+          <select
+            value={brand}
+            onChange={(e) => setBrand(e.target.value)}
+            disabled={busy}
+            className="rounded-lg border border-white/10 bg-ink px-2 py-1 text-xs text-slate-200 outline-none focus:border-sky-500/60"
+            title="Which brand agent to analyze"
+          >
+            {brands.map((b) => (
+              <option key={b.slug} value={b.slug}>
+                {b.displayName}
+              </option>
+            ))}
+            <option value="default">Default outbound agent</option>
+          </select>
+          <button onClick={analyze} disabled={!brand || busy} className="btn btn-primary btn-xs disabled:opacity-40">
+            {busy ? "Analyzing…" : "Analyze now"}
+          </button>
+        </div>
       </div>
-
-      {!campaignId && (
-        <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-400">
-          Select a campaign to see its analysis.
-        </p>
-      )}
 
       {msg && <p className="mb-3 rounded-lg border border-white/10 bg-ink/60 px-3 py-2 text-xs text-slate-300">{msg}</p>}
 
-      {campaignId && insights.length === 0 && (
+      {brand && insights.length === 0 && (
         <p className="rounded-lg border border-dashed border-white/10 bg-ink/40 px-4 py-6 text-center text-sm text-slate-400">
-          No analysis yet. It runs automatically after enough calls, or click “Analyze now”.
+          No analysis for this brand yet. It runs automatically after enough calls, or click “Analyze now”.
         </p>
       )}
 

@@ -13,6 +13,7 @@ import { ExportButtons } from "@/components/ExportButtons";
 import { TestAgentCard } from "@/components/TestAgentCard";
 import { VoicePicker } from "@/components/VoicePicker";
 import { InsightsPanel } from "@/components/InsightsPanel";
+import { SystemInsightsPanel } from "@/components/SystemInsightsPanel";
 import { AgentSwitcher } from "@/components/AgentSwitcher";
 import { LiveStatus } from "@/components/LiveStatus";
 
@@ -146,7 +147,8 @@ export default function Page() {
             <AgentSwitcher />
             <VoicePicker />
           </div>
-          <InsightsPanel campaignId={campaignId} />
+          <InsightsPanel />
+          <SystemInsightsPanel />
         </div>
       </main>
     </div>

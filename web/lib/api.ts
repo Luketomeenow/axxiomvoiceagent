@@ -315,12 +315,19 @@ export const api = {
     }
     return brandListPromise;
   },
-  // Continuous improvement (per-campaign transcript analysis + self-learning).
-  analyzeCampaign: (campaignId: string) => post(`/outbound/campaign/${campaignId}/analyze`),
-  campaignInsights: async (campaignId: string): Promise<import("./types").CampaignInsight[]> => {
-    const json = (await get(`/outbound/campaign/${campaignId}/insights`)) as {
+  // Continuous improvement (per-brand transcript analysis + self-learning).
+  // Slug "default" = the generic/fallback outbound agent.
+  analyzeBrand: (slug: string) => post(`/outbound/brand/${encodeURIComponent(slug)}/analyze`),
+  brandInsights: async (slug: string): Promise<import("./types").CampaignInsight[]> => {
+    const json = (await get(`/outbound/brand/${encodeURIComponent(slug)}/insights`)) as {
       insights?: import("./types").CampaignInsight[];
     };
+    return json.insights ?? [];
+  },
+  // System-level analysis: the whole operation (reach, funnel, failures, cost).
+  analyzeSystem: () => post(`/outbound/system/analyze`),
+  systemInsights: async (): Promise<import("./types").CampaignInsight[]> => {
+    const json = (await get(`/outbound/system/insights`)) as { insights?: import("./types").CampaignInsight[] };
     return json.insights ?? [];
   },
   approveInsight: (id: string, approvedBy?: string) => post(`/outbound/insights/${id}/approve`, { approvedBy }),

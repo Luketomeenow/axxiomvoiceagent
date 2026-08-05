@@ -64,10 +64,20 @@ export interface Call {
   created_at: string;
 }
 
+export interface SystemRecommendation {
+  area: string;
+  title: string;
+  detail: string;
+  impact: "high" | "medium" | "low";
+  effort: "low" | "medium" | "high";
+}
+
 export interface CampaignInsight {
   id: string;
   campaign_id: string | null;
   brand: string | null;
+  kind?: "brand_prompt" | "system" | null;
+  raw?: { recommendations?: SystemRecommendation[] } | null;
   created_at: string;
   calls_analyzed: number;
   window_from: string | null;

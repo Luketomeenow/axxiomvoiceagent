@@ -99,6 +99,8 @@ export const env = {
   // Per-campaign transcript analysis runs automatically every N ended calls
   // (and on demand). Produces an improvement report + a proposed improved prompt.
   insightEveryNCalls: num("INSIGHT_EVERY_N_CALLS", 25),
+  // How many of the brand's most recent ended calls each analysis reads.
+  insightCallsLimit: num("INSIGHT_CALLS_LIMIT", 50),
 
   // Supabase
   supabaseUrl: str("SUPABASE_URL"),

@@ -43,7 +43,8 @@ import { guessCampaignReadySheet, importLeads, listSheets } from "./import.ts";
 import { getCurrentVoices, listElevenLabsVoices, setAgentVoice, type VoiceTarget } from "./voice.ts";
 import { getProviderBalances } from "./balances.ts";
 import { BRANDS, getBrand } from "../assistant/brands.ts";
-import { analyzeCampaign, applyInsight, rejectInsight } from "../ai/campaignInsights.ts";
+import { analyzeBrand, analyzeCampaign, applyInsight, rejectInsight } from "../ai/campaignInsights.ts";
+import { analyzeSystem } from "../ai/systemInsights.ts";
 
 export const outbound = new Hono();
 
@@ -221,11 +222,81 @@ outbound.post("/outbound/dsar/delete", async (c) => {
   return c.json({ ok: true, ...result });
 });
 
-// --- Continuous improvement (per-campaign transcript analysis) ------------
+// --- Continuous improvement (per-brand transcript analysis) ---------------
 
-// Analyze this campaign's recent transcripts now (also runs automatically every
-// INSIGHT_EVERY_N_CALLS calls). Produces an improvement report + a proposed
-// improved system prompt, stored as a campaign_insight.
+// Analyze a brand's last INSIGHT_CALLS_LIMIT (default 50) ended-call
+// transcripts now (also runs automatically every INSIGHT_EVERY_N_CALLS ended
+// calls per brand). Produces an improvement report + a proposed improved
+// system prompt for that brand's assistant, stored as a campaign_insight.
+// Slug "default" = calls dialed by the generic/fallback assistant (brand null).
+outbound.post("/outbound/brand/:slug/analyze", async (c) => {
+  const param = c.req.param("slug");
+  const slug = param === "default" ? null : param;
+  if (!env.anthropicApiKey) {
+    return c.json({ ok: false, error: "analysis unavailable (ANTHROPIC_API_KEY not set on the server)" }, 400);
+  }
+  // Fast eligibility pre-check so the operator gets immediate feedback.
+  let countQ = db()
+    .from("call")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "ended")
+    .not("transcript", "is", null);
+  countQ = slug ? countQ.eq("brand", slug) : countQ.is("brand", null);
+  const { count } = await countQ;
+  if ((count ?? 0) < 3) {
+    return c.json({ ok: false, error: "need at least 3 ended calls with transcripts for this brand to analyze" }, 400);
+  }
+  // Detached: the analysis is a 1–2 min Claude call (see the campaign route below).
+  log.info("Brand analysis started", { brand: param, transcripts: Math.min(count ?? 0, env.insightCallsLimit) });
+  void analyzeBrand(slug).catch((err) => log.warn("Manual brand analyze failed", { brand: param, err: String(err) }));
+  return c.json({ ok: true, started: true });
+});
+
+// List a brand's improvement insights (report + suggested prompt + status).
+outbound.get("/outbound/brand/:slug/insights", async (c) => {
+  const param = c.req.param("slug");
+  const limit = Math.min(50, Math.max(1, Number(c.req.query("limit")) || 20));
+  let q = db().from("campaign_insight").select("*").order("created_at", { ascending: false }).limit(limit);
+  // System rows have brand=null, so the "default" (unbranded) list must also
+  // filter them out by kind.
+  q = param === "default" ? q.is("brand", null).neq("kind", "system") : q.eq("brand", param);
+  const { data, error } = await q;
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ insights: data ?? [] });
+});
+
+// --- System-level analysis (the whole operation, not one brand's prompt) ---
+
+// Run the operational analysis now: reach per brand, funnel, failure reasons,
+// calling hours, costs, config — stored as campaign_insight kind='system'.
+outbound.post("/outbound/system/analyze", async (c) => {
+  if (!env.anthropicApiKey) {
+    return c.json({ ok: false, error: "analysis unavailable (ANTHROPIC_API_KEY not set on the server)" }, 400);
+  }
+  const { count } = await db().from("call").select("id", { count: "exact", head: true }).eq("status", "ended");
+  if ((count ?? 0) < 3) {
+    return c.json({ ok: false, error: "need at least 3 ended calls to analyze the system" }, 400);
+  }
+  log.info("System analysis started", { endedCalls: count });
+  void analyzeSystem().catch((err) => log.warn("System analyze failed", { err: String(err) }));
+  return c.json({ ok: true, started: true });
+});
+
+// List system-analysis reports (newest first).
+outbound.get("/outbound/system/insights", async (c) => {
+  const limit = Math.min(50, Math.max(1, Number(c.req.query("limit")) || 10));
+  const { data, error } = await db()
+    .from("campaign_insight")
+    .select("*")
+    .eq("kind", "system")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ insights: data ?? [] });
+});
+
+// Back-compat: analyze the brand this campaign runs on (the analysis itself is
+// brand-scoped — see analyzeCampaign/resolveCampaignBrandSlug).
 outbound.post("/outbound/campaign/:id/analyze", async (c) => {
   const id = c.req.param("id");
   if (!env.anthropicApiKey) {

@@ -494,6 +494,12 @@ create table if not exists outbound.campaign_insight (
 );
 create index if not exists outbound_campaign_insight_idx on outbound.campaign_insight (campaign_id, created_at desc);
 
+-- Two kinds of AI analysis share this table:
+--   brand_prompt — per-brand conversation review + proposed improved prompt
+--   system       — operational review of the whole machine (advisory report only)
+alter table outbound.campaign_insight add column if not exists kind text not null default 'brand_prompt';
+create index if not exists outbound_campaign_insight_kind_idx on outbound.campaign_insight (kind, created_at desc);
+
 -- Same auth posture as the rest: authenticated reads only; service role (backend) writes.
 alter table outbound.campaign_insight enable row level security;
 do $$

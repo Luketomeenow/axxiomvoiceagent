@@ -774,27 +774,32 @@ const analyzeInFlight = new Set<string>();
 
 async function maybeAutoAnalyze(campaignId: string): Promise<void> {
   if (!env.anthropicApiKey) return;
-  if (analyzeInFlight.has(campaignId)) return;
+  // Brand-scoped: the campaign being ticked just tells us which brand to check.
+  const { resolveCampaignBrandSlug, analyzeBrand } = await import("../ai/campaignInsights.ts");
+  const slug = await resolveCampaignBrandSlug(campaignId);
+  const key = slug ?? "default";
+  if (analyzeInFlight.has(key)) return;
   const n = env.insightEveryNCalls;
-  const [{ count: ended }, { count: insights }] = await Promise.all([
-    db().from("call").select("id", { count: "exact", head: true }).eq("campaign_id", campaignId).eq("status", "ended"),
-    db().from("campaign_insight").select("id", { count: "exact", head: true }).eq("campaign_id", campaignId),
-  ]);
+  let endedQ = db().from("call").select("id", { count: "exact", head: true }).eq("status", "ended");
+  endedQ = slug ? endedQ.eq("brand", slug) : endedQ.is("brand", null);
+  // System-analysis rows also have brand=null — exclude them from the count.
+  let insightQ = db().from("campaign_insight").select("id", { count: "exact", head: true }).neq("kind", "system");
+  insightQ = slug ? insightQ.eq("brand", slug) : insightQ.is("brand", null);
+  const [{ count: ended }, { count: insights }] = await Promise.all([endedQ, insightQ]);
   const endedCount = ended ?? 0;
   const insightCount = insights ?? 0;
   // Not enough new ended calls since the last insight to warrant another pass.
   if (endedCount < (insightCount + 1) * n) return;
 
   const now = Date.now();
-  if (now - (lastAutoAnalyze.get(campaignId) ?? 0) < AUTO_ANALYZE_COOLDOWN_MS) return;
-  lastAutoAnalyze.set(campaignId, now);
+  if (now - (lastAutoAnalyze.get(key) ?? 0) < AUTO_ANALYZE_COOLDOWN_MS) return;
+  lastAutoAnalyze.set(key, now);
 
-  analyzeInFlight.add(campaignId);
-  log.info("Auto-analyzing campaign transcripts", { campaignId, endedCount, insightCount, n });
-  const { analyzeCampaign } = await import("../ai/campaignInsights.ts");
-  await analyzeCampaign(campaignId)
-    .catch((err) => log.warn("Auto-analyze failed", { campaignId, err: String(err) }))
-    .finally(() => analyzeInFlight.delete(campaignId));
+  analyzeInFlight.add(key);
+  log.info("Auto-analyzing brand transcripts", { brand: key, campaignId, endedCount, insightCount, n });
+  await analyzeBrand(slug)
+    .catch((err) => log.warn("Auto-analyze failed", { brand: key, err: String(err) }))
+    .finally(() => analyzeInFlight.delete(key));
 }
 
 // Periodically reconcile Twilio telephony cost/status onto recent calls. Twilio

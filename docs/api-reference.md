@@ -60,7 +60,11 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 
 | Method | Path | Request | Purpose |
 |--------|------|---------|---------|
-| `POST` | `/outbound/campaign/:id/analyze` | — | Analyze the campaign's recent transcripts now → writes a `campaign_insight` (report + proposed prompt). Needs `ANTHROPIC_API_KEY` + ≥3 transcripts. Also runs automatically every `INSIGHT_EVERY_N_CALLS` ended calls. |
+| `POST` | `/outbound/brand/:slug/analyze` | — | Analyze the brand's last `INSIGHT_CALLS_LIMIT` (default 50) ended-call transcripts (across campaigns, matched on `call.brand`; slug `default` = generic assistant) → writes a `campaign_insight` (report + proposed prompt). Needs `ANTHROPIC_API_KEY` + ≥3 transcripts. Also runs automatically every `INSIGHT_EVERY_N_CALLS` ended calls per brand. |
+| `GET` | `/outbound/brand/:slug/insights` | `?limit=` (default 20, max 50) | List that brand's insight rows. |
+| `POST` | `/outbound/system/analyze` | — | System-level analysis of the whole operation (reach per brand, funnel, failure reasons, hours, costs, config) → writes a `campaign_insight` with `kind='system'` (advisory report + recommendations; no apply step). |
+| `GET` | `/outbound/system/insights` | `?limit=` (default 10, max 50) | List system-analysis reports. |
+| `POST` | `/outbound/campaign/:id/analyze` | — | Back-compat: resolves the campaign's brand and runs the brand analysis above. |
 | `GET` | `/outbound/campaign/:id/insights` | `?limit=` (default 20, max 50) | List that campaign's insight rows. |
 | `POST` | `/outbound/insights/:id/approve` | `{ approvedBy? }` | Apply the proposed prompt: PATCH the live Vapi assistant + persist a `brand_prompt:<slug>` override. **400 if the compliance guardrail blocked it.** |
 | `POST` | `/outbound/insights/:id/reject` | — | Mark the proposal rejected (no live change). |

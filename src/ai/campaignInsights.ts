@@ -1,9 +1,15 @@
 /**
- * Per-campaign continuous improvement. After every N calls (or on demand) this
- * pulls a batch of that campaign's ended-call transcripts + outcomes and asks
- * Claude for two things:
+ * Per-BRAND continuous improvement. After every N calls (or on demand) this
+ * pulls the brand's most recent ended-call transcripts + outcomes (last
+ * INSIGHT_CALLS_LIMIT calls, across campaigns — each call row is stamped with
+ * the brand that serviced it) and asks Claude for two things:
  *   (a) report          — a detailed, human-readable improvement analysis
  *   (b) suggestedPrompt — a ready-to-paste IMPROVED outbound system prompt
+ *
+ * Brand-scoped because that's what a proposal changes: each brand has its own
+ * Vapi assistant + prompt, so mixing brands would analyze one prompt against
+ * another brand's calls. Slug null/"default" = calls dialed by the generic
+ * fallback assistant.
  *
  * The suggested prompt is a *proposal* (self-learning is suggest → human approve
  * → apply, in handlers/routes). Before it can be applied, checkPromptGuardrail
@@ -16,7 +22,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { assertAnthropic, env } from "../config/env.ts";
 import { log } from "../lib/logger.ts";
 import { db } from "../outbound/db.ts";
-import { getBrandAssistantId, setBrandPromptOverride } from "../outbound/brandStore.ts";
+import { getBrandAssistantId, getBrandPromptOverride, setBrandPromptOverride } from "../outbound/brandStore.ts";
 import { buildOutboundSystemPrompt } from "../assistant/outbound/prompt.ts";
 import { buildOutboundAssistantConfig } from "../assistant/outbound/config.ts";
 import { defaultBrand, getBrand } from "../assistant/brands.ts";
@@ -96,42 +102,85 @@ function parseInsightReply(raw: string): { report?: string; suggestedPrompt?: st
  * Analyze a campaign's recent transcripts and store a campaign_insight proposal.
  * Returns the inserted row id, or null if it couldn't run (no key / too few calls).
  */
+/**
+ * Most-relevant brand for a campaign: its explicit brand, else the most common
+ * brand stamped on its ended calls (the dialer denormalizes call.brand per lead).
+ * Null = the campaign's calls ran on the generic/fallback assistant.
+ */
+export async function resolveCampaignBrandSlug(campaignId: string): Promise<string | null> {
+  const { data: campaign } = await db().from("campaign").select("id, brand").eq("id", campaignId).maybeSingle();
+  if (!campaign) return null;
+  if (campaign.brand) return campaign.brand as string;
+  const { data: calls } = await db()
+    .from("call")
+    .select("brand")
+    .eq("campaign_id", campaignId)
+    .eq("status", "ended")
+    .order("created_at", { ascending: false })
+    .limit(100);
+  const tally = new Map<string, number>();
+  for (const c of calls ?? []) {
+    const b = c.brand as string | null;
+    if (b) tally.set(b, (tally.get(b) ?? 0) + 1);
+  }
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [slug, n] of tally) {
+    if (n > bestN) {
+      best = slug;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+/**
+ * Back-compat wrapper: analyze the brand a campaign runs on. Kept so the old
+ * per-campaign route keeps working; the analysis itself is brand-scoped.
+ */
 export async function analyzeCampaign(
   campaignId: string,
   opts: { limit?: number } = {},
 ): Promise<{ insightId: string; callsAnalyzed: number; guardrail: GuardrailResult } | null> {
+  return analyzeBrand(await resolveCampaignBrandSlug(campaignId), opts);
+}
+
+/**
+ * Analyze a brand's most recent transcripts (last INSIGHT_CALLS_LIMIT ended
+ * calls, across campaigns) and store a campaign_insight proposal. The "current
+ * prompt" is the brand's LIVE prompt — an approved override when one exists —
+ * so successive analyses iterate on what's actually deployed.
+ * Returns the inserted row id, or null if it couldn't run (no key / too few calls).
+ */
+export async function analyzeBrand(
+  brandSlug: string | null,
+  opts: { limit?: number } = {},
+): Promise<{ insightId: string; callsAnalyzed: number; guardrail: GuardrailResult } | null> {
+  const slugKey = brandSlug ?? "default";
   if (!env.anthropicApiKey) {
-    log.warn("campaignInsights: ANTHROPIC_API_KEY not set — skipping analysis", { campaignId });
+    log.warn("campaignInsights: ANTHROPIC_API_KEY not set — skipping analysis", { brand: slugKey });
     return null;
   }
-  const limit = opts.limit ?? env.insightEveryNCalls;
+  const limit = opts.limit ?? env.insightCallsLimit;
 
-  const { data: campaign } = await db()
-    .from("campaign")
-    .select("id, brand, name")
-    .eq("id", campaignId)
-    .maybeSingle();
-  if (!campaign) return null;
-  const brandSlug = (campaign.brand as string | null) ?? null;
-
-  const { data: rows } = await db()
+  let q = db()
     .from("call")
     .select("transcript, disposition, outcome, ended_by, sentiment_score, created_at")
-    .eq("campaign_id", campaignId)
     .eq("status", "ended")
     .not("transcript", "is", null)
     .order("created_at", { ascending: false })
-    .limit(limit)
-    .returns<BatchCall[]>();
+    .limit(limit);
+  q = brandSlug ? q.eq("brand", brandSlug) : q.is("brand", null);
+  const { data: rows } = await q.returns<BatchCall[]>();
 
   const calls = (rows ?? []).filter((c) => (c.transcript ?? "").trim().length > 0);
   if (calls.length < 3) {
-    log.info("campaignInsights: too few transcripts to analyze", { campaignId, have: calls.length });
+    log.info("campaignInsights: too few transcripts to analyze", { brand: slugKey, have: calls.length });
     return null;
   }
 
   const brand = brandSlug ? getBrand(brandSlug) ?? defaultBrand() : defaultBrand();
-  const currentPrompt = buildOutboundSystemPrompt(brand);
+  const currentPrompt = (await getBrandPromptOverride(slugKey)) ?? buildOutboundSystemPrompt(brand);
 
   const transcriptBlock = calls
     .map((c, i) => {
@@ -158,11 +207,11 @@ export async function analyzeCampaign(
 
     const text = res.content.find((b) => b.type === "text")?.text ?? "";
     const truncated = res.stop_reason === "max_tokens";
-    if (truncated) log.warn("campaignInsights: response hit max_tokens — output truncated", { campaignId });
+    if (truncated) log.warn("campaignInsights: response hit max_tokens — output truncated", { brand: slugKey });
     const parsed = parseInsightReply(text);
     if (!parsed) {
       log.error("campaignInsights: could not parse model reply", {
-        campaignId,
+        brand: slugKey,
         stop: res.stop_reason,
         sample: text.slice(0, 200),
       });
@@ -181,7 +230,7 @@ export async function analyzeCampaign(
     const { data: inserted, error } = await db()
       .from("campaign_insight")
       .insert({
-        campaign_id: campaignId,
+        campaign_id: null, // brand-scoped: the batch spans campaigns
         brand: brandSlug,
         calls_analyzed: calls.length,
         window_from: windowFrom,
@@ -197,18 +246,18 @@ export async function analyzeCampaign(
       .single();
 
     if (error || !inserted) {
-      log.error("campaignInsights: insert failed", { campaignId, err: error?.message });
+      log.error("campaignInsights: insert failed", { brand: slugKey, err: error?.message });
       return null;
     }
     log.info("campaignInsights: analysis stored", {
-      campaignId,
+      brand: slugKey,
       insightId: inserted.id,
       calls: calls.length,
       guardrailPassed: guardrail.passed,
     });
     return { insightId: inserted.id as string, callsAnalyzed: calls.length, guardrail };
   } catch (err) {
-    log.error("campaignInsights: analysis failed", { campaignId, err: String(err) });
+    log.error("campaignInsights: analysis failed", { brand: slugKey, err: String(err) });
     return null;
   }
 }
