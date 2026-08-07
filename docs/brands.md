@@ -13,6 +13,7 @@ Source of truth: **`src/assistant/brands.ts`** (the `BRANDS` registry). Caller I
 | Liftech Elevator Services (`liftech`) | CA (SoCal) | +1 562 (Long Beach) | 562-997-3639 | Sid | America/Los_Angeles |
 | Axxiom Elevator Florida (`axxiom-fl`) | FL | +1 561 (Palm Beach) | 954-970-0020 | Kai | America/New_York |
 | Arizona Elevator Solutions (`arizona`) | AZ | +1 928 (Flagstaff) | 480-557-7600 | Elliot | America/Phoenix |
+| Axxiom Elevator Carolinas (`carolinas`) | NC, SC | **per state**: SC → +1 803 721 6255, NC → +1 803 871 9379 | 803-721-6255 | Emma | America/New_York |
 | AmeriTex Elevator Services (`ameritex`) | TX + CA (Bay Area) | **per state**: TX → +1 325, CA → +1 510 | 844-646-9660 | Savannah | America/Chicago |
 
 - **AmeriTex dials per region**: its `phoneNumberByState` map picks the caller ID by the **lead's** state (TX leads see a Texas number, Bay-Area leads a 510 number); other brands use their single `vapiPhoneNumberId`.

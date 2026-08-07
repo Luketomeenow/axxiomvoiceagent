@@ -169,6 +169,35 @@ export const BRANDS: Brand[] = [
     complianceNote: "AZ one-party by law, but we disclose + get consent anyway (all-party policy); AZ has no DST; calling hours 8am–9pm MST.",
   },
   {
+    slug: "carolinas",
+    vapiPhoneNumberId: "515788b3-e24f-4eb5-a6ea-442b7ce88740", // default: Twilio +1 803 721 6255 (Columbia, SC)
+    // Two 803 DIDs — split by lead state to spread volume across both numbers
+    // (per-number call volume is what draws carrier spam flags).
+    phoneNumberByState: {
+      SC: "515788b3-e24f-4eb5-a6ea-442b7ce88740", // Twilio +1 803 721 6255
+      NC: "68a4d9a2-0c29-42ee-ac6f-ac3da31010e4", // Twilio +1 803 871 9379
+    },
+    voiceProvider: "vapi",
+    voiceId: "Emma", // Vapi native (current set) — realistic, warm, conversational
+    displayName: "Axxiom Elevator Carolinas",
+    legalName: "Axxiom Elevator Carolinas",
+    agentName: "Alex",
+    serviceArea: "North and South Carolina",
+    states: ["NC", "SC"],
+    localPhone: "803-721-6255",
+    website: "axxiomelevator.com",
+    positioning: "Reliability in Motion — the Carolinas' trusted elevator partner",
+    valueProps: [
+      "24/7 emergency response",
+      "services all elevator brands and models",
+      "complete code compliance & safety",
+      "backed by the Axxiom Elevator family of companies",
+    ],
+    consentPosture: "all-party", // NC + SC are one-party by law; all-party everywhere is our policy
+    timezone: "America/New_York",
+    complianceNote: "NC + SC one-party recording consent by law, but we disclose + get consent anyway (all-party policy); TCPA + calling hours 8am–9pm ET.",
+  },
+  {
     slug: "ameritex",
     vapiPhoneNumberId: "24509cad-f0de-41f4-8ece-ad188b77090d", // default: Twilio +1 510 (SF Bay Area)
     // AmeriTex spans TX + CA: dial each lead from a number local to its state.
