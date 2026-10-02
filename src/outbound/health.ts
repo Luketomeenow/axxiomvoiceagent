@@ -230,7 +230,7 @@ async function checkCallUpdates(): Promise<HealthCheck> {
       id,
       label,
       status: "warn",
-      detail: `${swept} call${swept === 1 ? "" : "s"} in the last 24 h never reported an end and were closed as stale-timeout. ${last}`,
+      detail: `${swept} call${swept === 1 ? "" : "s"} in the last 24 h never reported an end and ${swept === 1 ? "was" : "were"} closed as stale-timeout. ${last}`,
     };
   }
   return { id, label, status: "ok", detail: last };
@@ -254,21 +254,24 @@ async function checkDialer(): Promise<HealthCheck> {
 async function checkFailedWrites(): Promise<HealthCheck> {
   const id = "failed-writes";
   const label = "Database writes";
-  const { count, error } = await db()
-    .from("failed_op")
-    .select("id", { count: "exact", head: true })
-    .eq("resolved", false);
-  if (error) throw new Error(error.message);
-  if (count) {
+  // Only recent dead letters warn: old unresolved ones (e.g. migrated from the
+  // previous host) would otherwise keep this amber forever.
+  const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const unresolved = () => db().from("failed_op").select("id", { count: "exact", head: true }).eq("resolved", false);
+  const [recent, all] = await Promise.all([unresolved().gte("created_at", weekAgo), unresolved()]);
+  if (recent.error || all.error) throw new Error((recent.error ?? all.error)!.message);
+  const older = (all.count ?? 0) - (recent.count ?? 0);
+  const olderNote = older ? ` ${older} older unresolved (over 7 days).` : "";
+  if (recent.count) {
     return {
       id,
       label,
       status: "warn",
-      detail: `${count} write${count === 1 ? "" : "s"} failed after retries and were saved to outbound.failed_op.`,
+      detail: `${recent.count} write${recent.count === 1 ? "" : "s"} in the last 7 days failed after retries and ${recent.count === 1 ? "was" : "were"} saved to outbound.failed_op.${olderNote}`,
       fix: "Replay them: POST /outbound/failed-ops/replay (Analytics shows the count).",
     };
   }
-  return { id, label, status: "ok", detail: "No failed writes waiting." };
+  return { id, label, status: "ok", detail: `No failed writes in the last 7 days.${olderNote}` };
 }
 
 function checkLogStore(): HealthCheck {

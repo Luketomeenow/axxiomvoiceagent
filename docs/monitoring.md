@@ -18,7 +18,7 @@ recorded even when nobody has the dashboard open.
 | **Database** | The outbound schema can't be read. | `/ready`; the identity's grants. |
 | **Dialer** | `DIALER_ENABLED=false` (warning). Shows running campaigns. | Flip it at cutover only. |
 | **Errors** | Any error logged in the last hour (warning). | Filter the log to Errors. |
-| **Database writes** | Writes dead-lettered to `outbound.failed_op`. | `POST /outbound/failed-ops/replay`. |
+| **Database writes** | Writes dead-lettered to `outbound.failed_op` in the last 7 days (older unresolved ones are only counted). | `POST /outbound/failed-ops/replay`. |
 | **System log storage** | `outbound.app_log` missing or writes failing. | Re-run `voice_schema.sql` in Cloud Shell. |
 | **AI analysis (Foundry)** | No Foundry key, or `ANTHROPIC_BASE_URL` unset (would call api.anthropic.com). | `sync-app-settings.sh --apply`. |
 | **Voice agents' model** | Error: `VOICE_PROVIDER=foundry` with no key. Warning: still on Anthropic via Vapi, not Foundry. | `VOICE_PROVIDER=foundry`, then re-sync. |
