@@ -4,6 +4,7 @@
  *   GET  /health        liveness (App Service health check)
  *   GET  /ready         dependency-aware readiness (database + identity)
  *   POST /vapi/webhook  Vapi server messages (tool-calls, end-of-call-report)
+ *   POST /vapi/llm/chat/completions  voice agents' brain → Azure AI Foundry (relay)
  *   /auth/*             dashboard sign-in (session cookie)
  *   /outbound/*         dashboard API + live SSE stream
  *   everything else     the dashboard itself (Next.js static export)
@@ -23,6 +24,7 @@ import { log } from "./lib/logger.ts";
 import { safeEqual } from "./lib/auth.ts";
 import { dashboardAvailable, serveDashboard } from "./lib/staticDashboard.ts";
 import { handleEndOfCallReport, handleToolCalls } from "./vapi/handlers.ts";
+import { handleLlmRelay } from "./vapi/llmRelay.ts";
 import {
   handleOutboundEndOfCall,
   handleOutboundStatusUpdate,
@@ -89,6 +91,10 @@ app.get("/ready", async (c) => {
 // start/pause, call-now, export, live stream).
 app.route("/", auth);
 app.route("/", outbound);
+
+// The voice agents' brain in Azure AI Foundry (VOICE_PROVIDER=foundry): Vapi's
+// custom-llm posts OpenAI-format chat completions here; relayed to Foundry.
+app.post("/vapi/llm/chat/completions", (c) => handleLlmRelay(c));
 
 app.post("/vapi/webhook", async (c) => {
   // Verify the shared secret Vapi sends with every server message. Constant-time

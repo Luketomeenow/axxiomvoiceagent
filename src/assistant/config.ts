@@ -16,6 +16,7 @@ import {
 } from "./voicePipeline.ts";
 import { buildFirstMessage, buildSystemPrompt } from "./systemPrompt.ts";
 import { buildTools } from "./tools.ts";
+import { voiceModelBlock } from "./voiceModel.ts";
 
 export function buildAssistantConfig() {
   const webhookUrl = env.serverUrl ? `${env.serverUrl.replace(/\/$/, "")}/vapi/webhook` : undefined;
@@ -26,15 +27,15 @@ export function buildAssistantConfig() {
     // Let the agent speak first when the call connects.
     firstMessageMode: "assistant-speaks-first",
 
-    model: {
-      provider: "anthropic",
-      model: env.voiceModel, // VOICE_MODEL — the live agents' brain (see env.ts)
+    // Where the agent thinks — Anthropic via Vapi, or Azure AI Foundry via
+    // this app's relay (VOICE_PROVIDER; src/assistant/voiceModel.ts).
+    model: voiceModelBlock({
       temperature: 0.4,
       // Keep replies short so they start playing fast (prompt asks for 1-2 sentences).
       maxTokens: 250,
       messages: [{ role: "system", content: buildSystemPrompt() }],
       tools: buildTools(),
-    },
+    }),
 
     // Vapi native voice (no external 11labs credential needed; lowest latency).
     voice: buildVapiVoice("Elliot"),

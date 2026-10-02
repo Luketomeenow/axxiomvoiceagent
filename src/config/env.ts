@@ -147,10 +147,24 @@ export const env = {
   anthropicApiKey: str("ANTHROPIC_API_KEY"),
   anthropicBaseUrl: anthropicBaseUrl(),
   anthropicModel: str("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
-  // The model the Vapi voice agents think with (pushed into every assistant by
-  // the assistant sync). Separate from ANTHROPIC_MODEL on purpose: changing the
-  // analysis deployment must never silently change the live voice agents.
-  voiceModel: str("VOICE_MODEL", "claude-sonnet-4-6"),
+  // Where the Vapi voice agents think (pushed into every assistant by the
+  // assistant sync — see src/assistant/voiceModel.ts):
+  //   anthropic → Vapi calls Anthropic itself (outside Azure)
+  //   foundry   → Vapi → this app's relay (/vapi/llm) → Azure AI Foundry
+  voiceProvider: (str("VOICE_PROVIDER", "anthropic").toLowerCase() === "foundry" ? "foundry" : "anthropic") as
+    | "anthropic"
+    | "foundry",
+  // The model / Foundry deployment for the voice agents. Separate from
+  // ANTHROPIC_MODEL on purpose: changing the analysis deployment must never
+  // silently change the live voice agents.
+  voiceModel: str(
+    "VOICE_MODEL",
+    str("VOICE_PROVIDER").toLowerCase() === "foundry" ? "gpt-5.6-terra" : "claude-sonnet-4-6",
+  ),
+  // Foundry's OpenAI-compatible endpoint (the voice relay) + its key. The key is
+  // the same Foundry key as ANTHROPIC_API_KEY unless FOUNDRY_API_KEY is set.
+  foundryOpenAiUrl: str("FOUNDRY_OPENAI_URL", "https://axxiom-ai.openai.azure.com/openai/v1").replace(/\/+$/, ""),
+  foundryApiKey: str("FOUNDRY_API_KEY") || str("ANTHROPIC_API_KEY"),
   enableTranscriptAnalysis: bool("ENABLE_TRANSCRIPT_ANALYSIS", false),
   // Per-campaign transcript analysis runs automatically every N ended calls
   // (and on demand). Produces an improvement report + a proposed improved prompt.
@@ -265,6 +279,11 @@ export function logConfigSummary(log: (msg: string) => void): void {
   log(`Config — Dashboard auth: ${ready(!!sessionSecret())}${sessionSecret() ? "" : " (DASHBOARD_SESSION_SECRET, >= 32 chars)"}`);
   log(`Config — Dialer: ${env.dialerEnabled ? "enabled" : "DISABLED on this instance (DIALER_ENABLED=false)"}`);
   log(`Config — Vapi webhook secret: ${ready(!!env.vapiServerSecret)}`);
+  log(
+    `Config — Voice agents' model: ${env.voiceModel} via ${
+      env.voiceProvider === "foundry" ? `Azure AI Foundry relay (${env.foundryOpenAiUrl})` : "Anthropic (through Vapi)"
+    }`,
+  );
   log(`Config — Transfer number: ${ready(!!env.transferPhoneNumber)}`);
   log(
     `Config — Outbound: ${ready(

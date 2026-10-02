@@ -20,6 +20,7 @@ import {
 } from "../voicePipeline.ts";
 import { buildOutboundFirstMessage, buildOutboundSystemPrompt } from "./prompt.ts";
 import { buildOutboundTools } from "./tools.ts";
+import { voiceModelBlock } from "../voiceModel.ts";
 
 export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: string; promptOverride?: string } = {}) {
   const brand = opts.brand ?? defaultBrand();
@@ -33,9 +34,9 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
     firstMessage: buildOutboundFirstMessage(brand),
     firstMessageMode: "assistant-speaks-first",
 
-    model: {
-      provider: "anthropic",
-      model: env.voiceModel, // VOICE_MODEL — the live agents' brain (see env.ts)
+    // Where the agent thinks — Anthropic via Vapi, or Azure AI Foundry via
+    // this app's relay (VOICE_PROVIDER; src/assistant/voiceModel.ts).
+    model: voiceModelBlock({
       // Slightly lower than inbound for more consistent qualifying.
       temperature: 0.3,
       // Cap the reply length so completions finish (and start speaking) fast —
@@ -44,7 +45,7 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
       messages: [{ role: "system", content: systemPrompt }],
       // Warm-transfer to this brand's own human line (normalized to E.164 for Vapi).
       tools: buildOutboundTools(toE164(brand.localPhone) ?? undefined),
-    },
+    }),
 
     // Per-brand voice. Brands use Vapi's native voices (no external credential,
     // lowest latency); the env-default/fallback brand stays on ElevenLabs.

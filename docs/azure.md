@@ -65,8 +65,8 @@ live-call tool webhook makes stops paying a trans-Pacific round trip.
 - **AI stays inside Azure**: server-side Claude (insights, system analysis, transcript analysis)
   calls Foundry's Anthropic endpoint (`ANTHROPIC_BASE_URL=https://axxiom-ai.services.ai.azure.com/anthropic`,
   deployment `ANTHROPIC_MODEL=claude-sonnet-4-6`, 50K tokens/min; `claude-fable-5-1` has 250K if
-  rate limits appear). The **voice agents' own model** (`VOICE_MODEL`) runs inside Vapi, which calls
-  its model provider itself — moving that into Foundry is a separate decision (see Open items).
+  rate limits appear). The **voice agents' model** runs in Foundry too once `VOICE_PROVIDER=foundry`
+  (Vapi → this app's `/vapi/llm` relay → `VOICE_MODEL`, default `gpt-5.6-terra`) — see Open items.
 - The app must be told which identity resolves references (`keyVaultReferenceIdentity` = the UMI's
   resource id) — `sync-app-settings.sh --apply` sets it. Without it the references show **not
   Resolved** and the values arrive empty (which looks like "not configured", not like an auth error).
@@ -224,9 +224,15 @@ a laptop on `main`, re-run the `create-*-assistant` scripts with `SERVER_URL`=th
   handed to someone. Set it, then run the assistant sync.
 - **Inbound booking**: GoHighLevel credentials are not set anywhere (booking/lookup fail today);
   waiting on whether booking moves to Azure/Microsoft calendars instead.
-- **Voice agents' model**: Vapi calls the agents' model provider itself, outside Azure. Keeping the
-  whole conversation inside Azure means pointing Vapi at a Foundry deployment (or replacing the
-  Vapi/Deepgram/ElevenLabs/Twilio stack with Azure services) — a product decision, not done here.
+- **Voice agents' model → Foundry (built, switch with `VOICE_PROVIDER=foundry`)**: Vapi's
+  custom-llm points at this app's relay `POST /vapi/llm/chat/completions` (`src/vapi/llmRelay.ts`),
+  which forwards to the Foundry deployment `VOICE_MODEL` (default `gpt-5.6-terra`) with the Foundry
+  key from Key Vault. Claude in Foundry isn't served through the OpenAI-compatible API Vapi needs,
+  so it's a GPT model — tested: tool calls ✓, ~1.6–2.2 s to first words (Claude today ≈ 1.9 s).
+  The relay exists because Foundry rejects `max_tokens`, custom `temperature` and Vapi's extra
+  fields (each an HTTP 400 = dead turn). Takes effect on the next assistant sync; rollback =
+  `VOICE_PROVIDER=anthropic` + sync. Speech-to-text, voices and the phone carrier still run in
+  Vapi / Deepgram / ElevenLabs / Twilio.
 
 ## Local development
 
