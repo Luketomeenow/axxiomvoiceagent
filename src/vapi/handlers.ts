@@ -15,7 +15,7 @@ import {
 } from "../ghl/api.ts";
 import { analyzeTranscript } from "../ai/analyzeTranscript.ts";
 import { insertVoiceCall } from "./voiceCall.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { redactPII } from "../lib/redact.ts";
 import { TOOL_NAMES } from "../assistant/tools.ts";
 import {
@@ -26,6 +26,9 @@ import {
   type VapiMessage,
   type VapiToolResults,
 } from "./types.ts";
+import { endedReasonLevel } from "./endedReason.ts";
+
+const log = scopedLog("inbound-call");
 
 /**
  * Per-call working state, keyed by Vapi call id. In-memory only — fine for a
@@ -215,5 +218,9 @@ export async function handleEndOfCallReport(message: VapiMessage): Promise<void>
   }
 
   callState.delete(callId);
-  log.info("End-of-call processed", { callId, outcome: state.booked ? "booked" : transferred ? "transferred" : "completed" });
+  log[endedReasonLevel(message.endedReason)](`Inbound call ended: ${message.endedReason ?? "unknown reason"}`, {
+    callId,
+    outcome: state.booked ? "booked" : transferred ? "transferred" : "completed",
+    durationSeconds: message.durationSeconds ?? null,
+  });
 }

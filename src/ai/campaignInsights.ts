@@ -21,12 +21,14 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 import { assertAnthropic, env } from "../config/env.ts";
 import { anthropicClient } from "./client.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { db } from "../outbound/db.ts";
 import { getBrandAssistantId, getBrandPromptOverride, setBrandPromptOverride } from "../outbound/brandStore.ts";
 import { buildOutboundSystemPrompt } from "../assistant/outbound/prompt.ts";
 import { buildOutboundAssistantConfig } from "../assistant/outbound/config.ts";
 import { defaultBrand, getBrand } from "../assistant/brands.ts";
+
+const log = scopedLog("ai");
 
 let anthropic: Anthropic | undefined;
 

@@ -658,3 +658,31 @@ create table if not exists outbound.dashboard_user (
 alter table outbound.dashboard_user enable row level security;
 revoke all on outbound.dashboard_user from anon, authenticated;
 grant all privileges on outbound.dashboard_user to service_role;
+
+-- ===========================================================================
+-- SYSTEM LOGS (additive, safe to re-run) — the service's own log, shown in the
+-- dashboard's System logs tab (src/lib/logStore.ts). Same table as the Azure
+-- schema (scripts/azure/sql/voice_schema.sql). Backend-only: RLS on with NO
+-- policy, so only the service role reads/writes it.
+-- ===========================================================================
+create table if not exists outbound.app_log (
+  id            bigint generated always as identity primary key,
+  created_at    timestamptz not null default now(),
+  level         text not null,            -- info | warn | error
+  source        text not null,            -- dialer | outbound-call | inbound-call | webhook | api | http | monitor | …
+  message       text not null,
+  context       jsonb,
+  call_id       uuid,
+  vapi_call_id  text,
+  campaign_id   uuid,
+  lead_id       uuid,
+  instance      text,
+  version       text
+);
+create index if not exists outbound_app_log_created_idx on outbound.app_log (created_at);
+create index if not exists outbound_app_log_level_idx   on outbound.app_log (level, created_at);
+create index if not exists outbound_app_log_call_idx    on outbound.app_log (call_id) where call_id is not null;
+create index if not exists outbound_app_log_vapi_idx    on outbound.app_log (vapi_call_id) where vapi_call_id is not null;
+alter table outbound.app_log enable row level security;
+revoke all on outbound.app_log from anon, authenticated;
+grant all privileges on outbound.app_log to service_role;

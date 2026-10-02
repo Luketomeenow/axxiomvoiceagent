@@ -50,6 +50,9 @@ Curated, authoritative violation codes + compliance topics the agent's `lookupVi
 ### `failed_op`
 Dead-letter queue for resilient writes: `kind (lead.update | call.update | call_event | call.insert | dnc_suppression), ref_id, payload, error, resolved, created_at`. Outbound writes go through `updateLead`/`updateCall`/`recordEvent` (retry ×2 → dead-letter, never throw); replay via `POST /outbound/failed-ops/replay`. The `/analytics` page shows the unresolved count — keep it at 0.
 
+### `app_log`
+The service's own log, read by the dashboard's System logs tab ([monitoring.md](monitoring.md)): `id, created_at, level (info|warn|error), source, message, context (jsonb), call_id, vapi_call_id, campaign_id, lead_id, instance, version`. Batched in by `src/lib/logStore.ts` (phone numbers masked, secret-ish fields redacted, repeats throttled), deleted after `LOG_RETAIN_DAYS` (default 30). No foreign keys, so logs never block deletes (DSAR included). The hub's reader role can read it.
+
 ### `campaign_insight`
 AI campaign-improvement proposals (see self-learning in [outbound-campaigns.md](outbound-campaigns.md)): `campaign_id, brand, calls_analyzed, window_from/to, report, suggested_prompt, guardrail_passed, guardrail_notes, status (proposed|approved|applied|rejected), approved_by, approved_at, applied_at, model, raw`.
 

@@ -14,6 +14,8 @@ import { API_BASE } from "./api";
  * EventSource reconnects on its own (the server asks for 5s). Anything that
  * happened while disconnected was missed, so after a reconnect every
  * subscriber gets a `{ t: "*", op: "RESYNC" }` and refetches.
+ *
+ * The same stream carries System log lines (`log` events) for the live tail.
  */
 
 export interface LiveEventRow {
@@ -32,9 +34,26 @@ export interface LiveChange {
   rows?: LiveEventRow[]; // call_event inserts
 }
 
+/** One System log line (src/lib/logStore.ts StoredLog; id null = not from the table). */
+export interface LiveLog {
+  id: number | null;
+  at: string;
+  level: "info" | "warn" | "error";
+  source: string;
+  message: string;
+  context: Record<string, unknown> | null;
+  call_id: string | null;
+  vapi_call_id: string | null;
+  campaign_id: string | null;
+  lead_id: string | null;
+}
+
 type Listener = (change: LiveChange) => void;
+type LogListener = (entry: LiveLog) => void;
 
 const listeners = new Set<Listener>();
+const logListeners = new Set<LogListener>();
+const anyListeners = () => listeners.size + logListeners.size > 0;
 let source: EventSource | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let missedEvents = false;
@@ -65,28 +84,43 @@ function connect(): void {
       /* malformed frame — ignore */
     }
   });
+  source.addEventListener("log", (e) => {
+    let entry: LiveLog;
+    try {
+      entry = JSON.parse((e as MessageEvent<string>).data) as LiveLog;
+    } catch {
+      return; // malformed frame — ignore
+    }
+    for (const listener of logListeners) {
+      try {
+        listener(entry);
+      } catch (err) {
+        console.warn("live log listener failed", err);
+      }
+    }
+  });
   source.onerror = () => {
     missedEvents = true;
     // CONNECTING = the browser is already retrying. CLOSED = it gave up (e.g. a
     // non-200 like 401 while the page redirects to /login) — retry ourselves.
     if (source?.readyState === EventSource.CLOSED) {
       source = null;
-      if (!reconnectTimer && listeners.size) {
+      if (!reconnectTimer && anyListeners()) {
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
-          if (listeners.size) connect();
+          if (anyListeners()) connect();
         }, 5000);
       }
     }
   };
 }
 
-function subscribe(listener: Listener): () => void {
-  listeners.add(listener);
+function subscribe<T>(set: Set<T>, listener: T): () => void {
+  set.add(listener);
   connect();
   return () => {
-    listeners.delete(listener);
-    if (!listeners.size) {
+    set.delete(listener);
+    if (!anyListeners()) {
       source?.close();
       source = null;
     }
@@ -100,8 +134,18 @@ export function useLiveChanges(tables: string[], onChange: (change: LiveChange) 
   const key = tables.join(",");
   useEffect(() => {
     const wanted = new Set(key.split(","));
-    return subscribe((change) => {
+    return subscribe<Listener>(listeners, (change) => {
       if (change.op === "RESYNC" || wanted.has(change.t)) handler.current(change);
     });
   }, [key]);
+}
+
+/** Call `onLog` for every System log line as it happens (the live tail). */
+export function useLiveLogs(onLog: (entry: LiveLog) => void, enabled = true): void {
+  const handler = useRef(onLog);
+  handler.current = onLog;
+  useEffect(() => {
+    if (!enabled) return;
+    return subscribe<LogListener>(logListeners, (entry) => handler.current(entry));
+  }, [enabled]);
 }

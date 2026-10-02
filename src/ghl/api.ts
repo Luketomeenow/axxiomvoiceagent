@@ -7,8 +7,10 @@
  */
 
 import { env } from "../config/env.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { ghlFetch } from "./client.ts";
+
+const log = scopedLog("ghl");
 
 export interface GhlContact {
   id: string;

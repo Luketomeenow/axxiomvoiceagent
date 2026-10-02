@@ -15,8 +15,10 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 import { assertAnthropic, env } from "../config/env.ts";
 import { anthropicClient } from "./client.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { db } from "../outbound/db.ts";
+
+const log = scopedLog("ai");
 
 let anthropic: Anthropic | undefined;
 

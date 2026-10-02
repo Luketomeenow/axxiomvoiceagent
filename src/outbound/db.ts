@@ -9,8 +9,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { env } from "../config/env.ts";
 import { dataClient } from "../lib/dataClient.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { maskPhone } from "../lib/redact.ts";
+
+const log = scopedLog("database");
 
 /** Client whose default schema is `outbound` (Azure Postgres, or legacy Supabase). */
 export function db(): SupabaseClient {

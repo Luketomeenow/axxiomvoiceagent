@@ -120,9 +120,10 @@ until a GitHub Actions pipeline exists. **Commit first** — the package script 
 
 | Step | Command | What happens |
 |---|---|---|
-| Settings | `./scripts/azure/sync-app-settings.sh` then `--apply` | Loads missing secrets from `.env` into the vault, writes KV references + config, sets `DATA_BACKEND=azure`, identity, `SERVER_URL`, startup `node --enable-source-maps dist/server.mjs`, Always-On, health check `/health`. `DIALER_ENABLED` is defaulted to `false` on first run and **never changed afterwards** by the script. |
+| Settings | `./scripts/azure/sync-app-settings.sh` then `--apply` | Loads missing secrets from `.env` into the vault, writes KV references + config, sets `DATA_BACKEND=azure`, identity, `SERVER_URL`, startup `node --enable-source-maps dist/server.mjs`, Always-On, health check `/health`, container logging to the file system (so `az webapp log tail/download` show the app's own output, crashes included). `DIALER_ENABLED` is defaulted to `false` on first run and **never changed afterwards** by the script. |
 | Package + deploy | `./scripts/azure/package-app.sh --deploy` | Typechecks, bundles the backend (`dist/server.mjs`, all deps inlined), builds the dashboard export (`public/`), zips with a `VERSION` file, `az webapp deploy --async`. Nothing is installed server-side (`SCM_DO_BUILD_DURING_DEPLOYMENT=false`) — no Oryx, no version drift. |
-| Verify | `curl https://<host>/health` → `version` = your sha · `/ready` → `connectedAs: umi-axxiom-voice` | `/ready` is the end-to-end identity → token → Postgres → schema proof. |
+| Schema | Cloud Shell: re-run `voice_schema.sql` **if it changed** in the commits you're deploying | Idempotent. Without it new tables are missing (e.g. `outbound.app_log` → System logs stay in memory and say so). |
+| Verify | `curl https://<host>/health` → `version` = your sha · `/ready` → `connectedAs: umi-axxiom-voice` · dashboard → **System logs** | `/ready` is the end-to-end identity → token → Postgres → schema proof; System logs' health checks cover Vapi routing, stuck calls, Foundry and Twilio. |
 | Agent config | Dashboard → Agent studio → **Re-sync Vapi assistants** | Server-side replacement for the `create-*-assistant` scripts (which need the database). Pushes prompts/tools/voices/approved prompt overrides and points every webhook at `SERVER_URL`. Run after any deploy that changes `src/assistant/**`. |
 
 Rules carried over from the hub: never change app settings while a deploy is running; a 502 from
@@ -254,7 +255,7 @@ a laptop on `main`, re-run the `create-*-assistant` scripts with `SERVER_URL`=th
 | A setting shows the literal `@Microsoft.KeyVault(…)` / feature "not configured" | Reference not resolved: identity lacks Secrets User on `kv-axxiom-voice`, `keyVaultReferenceIdentity` not set (re-run the settings script), or the secret name is wrong (lowercase, dashes). |
 | Every dashboard request 503 "auth not configured" | `DASHBOARD_SESSION_SECRET` missing or shorter than 32 characters. |
 | Banner "Dialing is disabled on this instance" | `DIALER_ENABLED=false` — intended until cutover step 4. |
-| Calls happen but nothing reaches the app | Vapi still posts to the old host — run **Re-sync Vapi assistants**; check Vapi's org-level Server URL. |
+| Calls happen but nothing reaches the app / live calls stuck on "ringing" | Vapi still posts to the old host (red banner: **Vapi → this server**) — run **Re-sync Vapi assistants**; check Vapi's org-level Server URL. Stuck rows close themselves after 15 min (`stale-timeout`). |
 | Live panels stop updating | The SSE stream dropped; the browser reconnects within ~5 s and every panel refetches. Persistent: check the app log for `/outbound/events` errors. |
 | `/health` shows an older `version` | The deploy didn't land (or is still in progress) — `az webapp log deployment show -g Axxiom-devs-foundry -n app-axxiom-voice-agents`. |
-| Logs | `az webapp log tail -g Axxiom-devs-foundry -n app-axxiom-voice-agents` (JSON lines; phones/emails masked). |
+| Logs | Dashboard → **System logs** (filters, live tail, per-call history; `outbound.app_log`). Raw stream: `az webapp log tail -g Axxiom-devs-foundry -n app-axxiom-voice-agents` (JSON lines; phones masked). App Insights only records HTTP requests, not log lines. |

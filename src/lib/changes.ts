@@ -10,7 +10,9 @@
  * hand-run SQL, which the dashboard's reconnect/safety refresh covers.
  */
 
-import { log } from "./logger.ts";
+import { scopedLog } from "./logger.ts";
+
+const log = scopedLog("live-stream");
 
 export type ChangeOp = "INSERT" | "UPSERT" | "UPDATE" | "DELETE";
 

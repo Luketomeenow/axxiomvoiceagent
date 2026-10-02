@@ -18,6 +18,9 @@ import { AgentSwitcher } from "@/components/AgentSwitcher";
 import { LiveStatus } from "@/components/LiveStatus";
 import { UserMenu } from "@/components/UserMenu";
 import { AssistantSyncCard } from "@/components/AssistantSyncCard";
+import { HealthBanner } from "@/components/HealthBanner";
+import { SystemLogs } from "@/components/SystemLogs";
+import { useHealth } from "@/lib/health";
 
 /**
  * The console is split into tabs so one page isn't doing everything at once.
@@ -25,13 +28,14 @@ import { AssistantSyncCard } from "@/components/AssistantSyncCard";
  * receives transcript lines from the live stream, so unmounting it mid-call
  * would drop the transcript collected so far; keeping panels mounted also
  * keeps each panel subscribed to the (one, shared) stream and avoids refetch churn.
- * The active tab syncs to the URL hash (#calls, #leads, #agent) for deep links.
+ * The active tab syncs to the URL hash (#calls, #leads, #agent, #logs) for deep links.
  */
 const TABS = [
   { id: "overview", label: "Overview", hint: "Run campaigns and watch live calls" },
   { id: "calls", label: "Call history", hint: "Recordings, summaries and transcripts" },
   { id: "leads", label: "Leads", hint: "Import, browse and export leads" },
   { id: "agent", label: "Agent studio", hint: "Test calls, voices and AI improvements" },
+  { id: "logs", label: "System logs", hint: "Health checks, errors and what the server did" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
 
@@ -61,6 +65,7 @@ export default function Page() {
   }, []);
 
   const activeTab = TABS.find((t) => t.id === tab) ?? TABS[0];
+  const { report: health } = useHealth();
 
   return (
     <div className="min-h-screen">
@@ -105,6 +110,9 @@ export default function Page() {
                     }`}
                   >
                     {t.label}
+                    {t.id === "logs" && health?.status === "error" && (
+                      <span className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-rose-500 align-middle" />
+                    )}
                   </button>
                 );
               })}
@@ -115,6 +123,9 @@ export default function Page() {
       </header>
 
       <main className="mx-auto max-w-7xl space-y-5 p-5">
+        {/* Hidden unless a health check has a real problem. */}
+        {tab !== "logs" && <HealthBanner onOpen={() => selectTab("logs")} />}
+
         {/* Always visible on every tab: hides itself when nothing is running. */}
         <LiveCampaigns
           onSelect={(id) => {
@@ -153,6 +164,10 @@ export default function Page() {
           <InsightsPanel />
           <SystemInsightsPanel />
           <AssistantSyncCard />
+        </div>
+
+        <div role="tabpanel" className={tab === "logs" ? "space-y-5" : "hidden"}>
+          <SystemLogs />
         </div>
       </main>
     </div>

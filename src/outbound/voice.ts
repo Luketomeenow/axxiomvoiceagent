@@ -11,9 +11,11 @@
 
 import { env } from "../config/env.ts";
 import { fetchWithTimeout } from "../lib/http.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { buildVoice } from "../assistant/voicePipeline.ts";
 import { db } from "./db.ts";
+
+const log = scopedLog("voice");
 
 export type VoiceTarget = "vapi" | "elevenlabs";
 const VOICE_KEY: Record<VoiceTarget, string> = {

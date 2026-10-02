@@ -186,11 +186,17 @@ Next.js dashboard ◀─live SSE stream─┘   ◀─start/pause, call-now, tes
 - **API routes** — `src/outbound/routes.ts` (campaigns, start/pause with budget,
   stats, analytics + compliance audit, insights approve/reject, Twilio sync,
   failed-op replay, retention purge, DSAR delete, import/export, test-call,
-  assistant sync, the live SSE stream) — all session-gated.
+  assistant sync, System logs + health checks, the live SSE stream) — all
+  session-gated.
+- **Monitoring** — `src/lib/logStore.ts` + `src/outbound/health.ts`: every log
+  line is kept in `outbound.app_log` (masked, 30 days) and streamed live to the
+  dashboard's **System logs** tab, with health checks (Vapi webhook routing,
+  stuck calls, database, dialer, Foundry, Twilio) re-run every 5 minutes. See
+  [docs/monitoring.md](docs/monitoring.md).
 - **Dashboard** — `web/` (Next.js + Tailwind, **login-gated**): live campaign
   cards, live monitor with transcripts + end-call, leads table, campaign/brand/
-  test-call controls, AI insights panel, export, and `/analytics` (funnel,
-  trends, costs, call quality, compliance).
+  test-call controls, AI insights panel, export, System logs, and `/analytics`
+  (funnel, trends, costs, call quality, compliance).
 
 ## Setup (outbound)
 

@@ -9,8 +9,10 @@ import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 
 import { env, sessionSecret } from "../config/env.ts";
 import { findUserById, type DashboardUser } from "../auth/users.ts";
-import { log } from "./logger.ts";
+import { scopedLog } from "./logger.ts";
 import { SESSION_COOKIE, signSession, verifySession } from "./session.ts";
+
+const log = scopedLog("auth");
 
 /** The signed-in operator, set on the context by requireAuth. */
 export interface SessionUser {

@@ -6,7 +6,7 @@
  */
 
 import { env } from "../config/env.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { db, recordEvent, suppressNumber, updateCall, updateLead, type Disposition } from "./db.ts";
 import { redactPII } from "../lib/redact.ts";
 import { classifyMachineReach } from "./reach.ts";
@@ -20,6 +20,9 @@ import {
   type VapiMessage,
   type VapiToolResults,
 } from "../vapi/types.ts";
+import { endedReasonLevel } from "../vapi/endedReason.ts";
+
+const log = scopedLog("outbound-call");
 
 /** Is this server message for an outbound call? Covers campaign + test calls
  *  on the default OR any per-brand assistant (we tag both via metadata.kind). */
@@ -398,6 +401,8 @@ export async function handleOutboundStatusUpdate(message: VapiMessage): Promise<
   const callRowId = await resolveCallRowId(message);
   const status = message.status ?? "";
   if (!status) return;
+  if (callRowId) log.info(`Call status: ${status}`, { callId: message.call?.id, callRowId });
+  else log.warn(`Status update (${status}) for a call this server has no record of`, { callId: message.call?.id });
 
   // Map Vapi statuses onto our call.status vocabulary.
   const map: Record<string, string> = {
@@ -550,5 +555,15 @@ export async function handleOutboundEndOfCall(message: VapiMessage): Promise<voi
     payload: { summary },
   });
 
-  log.info("Outbound end-of-call processed", { callId: message.call?.id, leadId });
+  const reason = message.endedReason ?? "unknown reason";
+  const meta = {
+    callId: message.call?.id,
+    callRowId,
+    leadId,
+    endedReason: message.endedReason ?? null,
+    durationSeconds: message.durationSeconds ?? null,
+    cost: typeof message.cost === "number" ? message.cost : null,
+  };
+  if (!callRowId) log.warn(`End-of-call (${reason}) for a call this server has no record of`, meta);
+  else log[endedReasonLevel(message.endedReason)](`Outbound call ended: ${reason}`, meta);
 }

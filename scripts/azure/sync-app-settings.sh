@@ -5,7 +5,7 @@
 #             .env first if the vault doesn't have them yet)
 #   config  → plain app settings
 #   Azure   → data backend, identity, SERVER_URL, startup command, Always-On,
-#             health check, Key Vault reference identity
+#             health check, container logging, Key Vault reference identity
 #
 #   ./scripts/azure/sync-app-settings.sh            # dry-run (prints names, never values)
 #   ./scripts/azure/sync-app-settings.sh --apply
@@ -53,6 +53,7 @@ CONFIG=(
   ANTHROPIC_MODEL VOICE_PROVIDER VOICE_MODEL ENABLE_TRANSCRIPT_ANALYSIS INSIGHT_EVERY_N_CALLS INSIGHT_CALLS_LIMIT
   OUTBOUND_TIMEZONE CALL_WINDOW_START CALL_WINDOW_END MAX_CONCURRENT_CALLS MAX_CALL_ATTEMPTS
   RETRY_BACKOFF_MINUTES MAX_CALLS_PER_NUMBER_PER_DAY PII_RETAIN_DAYS ENABLE_VOICEMAIL_DETECTION
+  LOG_PERSIST_LEVEL LOG_RETAIN_DAYS
   DASHBOARD_SESSION_HOURS
   COMPANY_NAME AGENT_NAME SERVICE_AREA BUSINESS_HOURS BOOKING_TYPE
 )
@@ -137,7 +138,10 @@ if $APPLY; then
   az webapp config set -g "$RG" -n "$APP" \
     --startup-file "node --enable-source-maps dist/server.mjs" --always-on true \
     --generic-configurations '{"healthCheckPath": "/health"}' -o none
-  echo "applied (+ startup command, Always-On, health check /health, KV reference identity)."
+  # Keep the app's own stdout (JSON log lines, crash output) so `az webapp log
+  # tail/download` show it — App Insights only records requests for this app.
+  az webapp log config -g "$RG" -n "$APP" --docker-container-logging filesystem -o none
+  echo "applied (+ startup command, Always-On, health check /health, container logging, KV reference identity)."
 else
   printf '%s\n' "${settings[@]}" | sed -E '/KeyVault|NODE_ENV|SCM_|SERVER_URL|DATA_BACKEND|AZURE_PG|DASHBOARD_DIR|DIALER|ANTHROPIC_BASE_URL|_MODEL/!s/=.*/=<value>/'
   echo "dry run — add --apply to write."

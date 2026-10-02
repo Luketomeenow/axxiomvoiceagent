@@ -20,7 +20,9 @@ import type { Context } from "hono";
 
 import { env } from "../config/env.ts";
 import { safeEqual } from "../lib/auth.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
+
+const log = scopedLog("llm-relay");
 
 // OpenAI chat-completions fields Foundry accepts. Everything else Vapi adds
 // (call/metadata objects, sampling knobs the reasoning models reject) is dropped.

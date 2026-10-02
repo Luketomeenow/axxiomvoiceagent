@@ -10,7 +10,7 @@ Two agents share one Hono webhook service:
 - **Inbound** — answers every call 24/7, triages new leads vs. existing customers, books site surveys, transfers to a human (incl. a safety handoff for trapped/injured callers). Scope is inquiries + leads, **not** emergency dispatch.
 - **Outbound** — compliant qualification campaign that dials CA elevator-violation leads, qualifies/dispositions them, monitored from a Next.js dashboard in `web/`. Lives in a separate `outbound` schema (Azure Postgres `axxiom_hub`, shared with the hub, which reads it).
 
-See `docs/` for the full guides (`docs/README.md` is the index: overview, setup, **azure**, brands, voices, inbound, outbound campaigns, API reference, database, compliance) and `README.md` for the quick tour. `docs/overview.md` is the plain-English executive summary. This file is the operational map for working in the code.
+See `docs/` for the full guides (`docs/README.md` is the index: overview, setup, **azure**, brands, voices, inbound, outbound campaigns, **monitoring**, API reference, database, compliance) and `README.md` for the quick tour. `docs/overview.md` is the plain-English executive summary. This file is the operational map for working in the code.
 
 ## Runtime & commands
 
@@ -40,7 +40,7 @@ npm run import-leads:node
 npm run create-outbound-assistant:node
 ```
 
-There is **no linter**. `bun run typecheck` (+ the `web/` typecheck) is the static gate; `bun test` covers only the data-layer shim (`src/lib/pg/shim.test.ts`) — run it after touching `src/lib/pg/` or `src/lib/dataClient.ts`.
+There is **no linter**. `bun run typecheck` (+ the `web/` typecheck) is the static gate; `bun test` covers the data-layer shim (`src/lib/pg/shim.test.ts`, needs postgresql@18), the Foundry relay and the log store's masking/throttling — run it after touching `src/lib/pg/`, `src/lib/dataClient.ts`, `src/vapi/llmRelay.ts` or `src/lib/logStore.ts`.
 
 ## Layout
 
@@ -52,12 +52,14 @@ src/
   lib/                dataClient.ts (THE db client factory: azure pg shim | legacy supabase-js, write
                       instrumentation → changes.ts), pg/shim.ts + pg/backend.ts (Entra-token pool),
                       auth.ts (webhook secret, requireAuth session cookie), session.ts, passwords.ts,
-                      staticDashboard.ts, rateLimit.ts, redact.ts
+                      staticDashboard.ts, rateLimit.ts, redact.ts, logger.ts (scopedLog → stdout + sinks),
+                      logStore.ts (System logs: ring buffer + live tail + outbound.app_log, masked/throttled)
   auth/               /auth/login|logout|me|password routes + dashboard_user accounts
   assistant/          Inbound prompt/tools/config; brands.ts (6-brand registry); voicePipeline.ts
     outbound/         Outbound: qualification prompt, compliant disclosure, tools, config
   vapi/               Inbound webhook types + handlers (tool dispatch, end-of-call), voiceCall.ts (ax_voice_call writer)
-  outbound/           routes.ts (API), handlers.ts, dialer.ts, db.ts, phone.ts, voice.ts, brandStore.ts
+  outbound/           routes.ts (API), handlers.ts, dialer.ts, db.ts, phone.ts, voice.ts, brandStore.ts,
+                      health.ts (health checks + 5-min monitor that logs state changes)
   ghl/                GoHighLevel client + domain ops
   ai/                 Optional post-call Claude transcript analysis
 scripts/
@@ -68,7 +70,8 @@ scripts/
 web/                  Next.js + Tailwind dashboard, `output: "export"` (static) served by the backend (same
                       origin; `next dev` :3001 proxies /outbound + /auth) — tabbed console (page.tsx: Overview =
                       controls/stats/live monitor, Call history, Leads = import/export/table,
-                      Agent studio = test-call/voice/insights; LiveCampaigns strip always visible;
+                      Agent studio = test-call/voice/insights, System logs = health checks + log;
+                      LiveCampaigns strip + HealthBanner (error-level checks) always visible;
                       panels stay mounted — CSS-hidden — so live transcript streams survive tab switches;
                       all panels share ONE EventSource via lib/live.ts useLiveChanges)
                       + /analytics (funnel, trends, call quality, compliance audit; charts in components/Charts.tsx)
@@ -79,6 +82,7 @@ docs/                 Full documentation (see docs/README.md)
 ## Conventions
 
 - **ESM + Bun imports**: `"type": "module"`, and local imports use the explicit `.ts` extension (e.g. `import { env } from "./config/env.ts"`). Match this — don't drop the extension.
+- **Logging**: `const log = scopedLog("<source>")` from `src/lib/logger.ts` at the top of a module (never bare `console.*`). The source is the System logs filter (`dialer`, `outbound-call`, `inbound-call`, `webhook`, `api`, `http`, `monitor`, …). Put ids in meta as `callRowId` (ours), `callId` (Vapi's), `leadId`, `campaignId`: the log store indexes them so "show every line for this call" works. Phone numbers are masked on the way in, but still use `maskPhone`/`redactPII` for anything you add.
 - **Config**: read env only through `src/config/env.ts`. The server is designed to **boot with missing keys** so the App Service health check stays green; feature modules call `assert*()` (e.g. `assertGhl`, `assertOutbound`, `assertDatabase`) and throw a clear error only when an unconfigured feature is actually used. Add new env there with a sane default — and to `scripts/azure/sync-app-settings.sh` (SECRETS → Key Vault ref in `kv-axxiom-voice` named `<env-name-lowercase-dashes>`, or CONFIG → plain setting).
 - **Database access**: always `db()` (outbound schema) or `dataClient("public")` — never `createClient`/`new Pool` elsewhere. On `DATA_BACKEND=azure` it's the PostgREST-compatible shim: **only the methods listed at the top of `src/lib/pg/shim.ts` exist** (no embedded selects like `lead:lead_id(...)` — fetch the related ids with `.in()` instead, see `withCallContext` in routes.ts; no `.contains()`/`.match()`/`.filter()`). `undefined` = not provided (like supabase-js). Every write through it publishes a change event → the dashboard's SSE stream.
 - **Voice agents' brain**: `VOICE_PROVIDER=anthropic` (Vapi calls Anthropic itself) or `foundry` (Vapi custom-llm → this app's relay `POST /vapi/llm/chat/completions`, `src/vapi/llmRelay.ts` → Foundry deployment `VOICE_MODEL`, default `gpt-5.6-terra`; auth = `x-vapi-secret`/Bearer = `VAPI_SERVER_SECRET`). The relay renames `max_tokens`→`max_completion_tokens` and drops `temperature`/unknown fields because Foundry's GPT deployments 400 on them; Claude in Foundry isn't on the OpenAI-compatible API, so the Foundry voice brain is GPT. `src/assistant/voiceModel.ts` builds the model block; changes reach Vapi only via the assistant sync.
@@ -92,6 +96,7 @@ docs/                 Full documentation (see docs/README.md)
 - **`DIALER_ENABLED`** (default true) gates every dial path (`dispatchCall`, `placeCall`, `testCall`, `startCampaignWorker`, boot resume). The Azure app keeps it `false` until the old host is idle — "never two dialers". `sync-app-settings.sh` only defaults it on first setup, never flips it. The dashboard shows a banner when it's off.
 - **Outbound write resilience**: lead/call/event writes go through `updateLead` / `updateCall` / `recordEvent` in `src/outbound/db.ts`, which retry then dead-letter to `outbound.failed_op` instead of silently dropping. When adding new outbound writes, use these — don't call `db().from(...).update()` raw. The `/analytics` page surfaces the unresolved-failure count.
 - **Schema + analytics**: the dashboard reads pre-aggregated SQL views (`outbound.v_*`) via `GET /outbound/analytics` + `/analytics/compliance` and every other panel through `/outbound/*` read endpoints (`campaigns/live`, `calls/active`, `calls/recent`, `leads`, `stats`) — never the database directly. The Azure DDL is `scripts/azure/sql/voice_schema.sql` (idempotent; applied from **Cloud Shell** — laptops can't reach the server; it `set role`s to Luke because his login defaults to `dataservices@…`). **Schema changes go in BOTH** `voice_schema.sql` and the legacy `scripts/sql/outbound_schema.sql` while Supabase mode exists. Table/view/column names are a contract with the marketing hub (Voice page, report emails, agent service read `outbound.call`, `v_campaign_funnel`, `v_lead_disposition_counts`, `public.ax_voice_call`).
+- **System logs + health** (dashboard → System logs, `docs/monitoring.md`): every log line also goes to `src/lib/logStore.ts` → ring buffer (live tail over the same SSE stream as `log` events) and, at/above `LOG_PERSIST_LEVEL` (default info), batched into `outbound.app_log` (kept `LOG_RETAIN_DAYS`, default 30). It never throws and never logs through `log` (recursion) — its own failures go to console. Missing table → memory-only + a health warning until `voice_schema.sql` is re-run. HTTP 5xx and thrown route errors are logged by middleware in `src/index.ts`; uncaught exceptions drain the queue before exit. `src/outbound/health.ts` checks Vapi webhook routing (managed assistants + numbers → `SERVER_URL`), calls stuck without Vapi updates, database, dialer, failed writes, errors, Foundry config, Twilio; the monitor re-runs them every 5 min and logs each state change. Error-level checks show as a red banner on every tab.
 - **Failed-op replay + retention**: dead-lettered writes can be re-applied via `POST /outbound/failed-ops/replay` (`replayFailedOps` in `db.ts`), not just counted. Call content (transcript/recording/raw) is purged after `PII_RETAIN_DAYS` via `POST /outbound/retention/purge`; `POST /outbound/dsar/delete` erases all data for a phone (keeping only the DNC entry).
 - **Call-end attribution**: `call.ended_by` (`customer` | `agent` | `operator` | `system`) is derived from Vapi's `endedReason` (`endedByFromReason` in `handlers.ts`) — shown as a badge in the dashboard's Recent calls so you can see who hung up.
 - **Data sources — Vapi vs Twilio**: Vapi owns the conversation (transcript, recording, disposition, sentiment, disclosure/consent) and reports its own platform cost (`call.vapi_cost`). Twilio is only the carrier, but owns the authoritative telephony **cost + carrier status + answered-by**: `src/outbound/twilioSync.ts` reconciles those (`telephony_cost`/`provider_status`/`answered_by`) by the Twilio Call SID (captured from Vapi's `phoneCallProviderId`) via `POST /outbound/twilio/sync` + a throttled auto-sync in the worker. **Needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` on the server.** Analytics shows cost/call, cost/qualified, connect rate, who-ended breakdown, and per-brand (≈ per-caller-ID) health from the extended `v_call_quality`. It also shows **remaining provider balances** (`GET /outbound/balances`, `src/outbound/balances.ts`, cached 60s): Twilio via its official Balance API; Vapi credits need optional `VAPI_JWT_SECRET` (org JWT secret from the Vapi dashboard — plain API keys are rejected by Vapi's org endpoint, tile shows n/a until set). Verify creds with `bun run check-balances`.

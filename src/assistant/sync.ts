@@ -14,7 +14,7 @@
 
 import { env } from "../config/env.ts";
 import { fetchWithTimeout } from "../lib/http.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { redactSecretsDeep } from "../lib/redact.ts";
 import {
   getBrandAssistantIdStrict,
@@ -26,6 +26,8 @@ import { getVapiVoiceIdStrict } from "../outbound/voice.ts";
 import { BRANDS, getBrand, type Brand } from "./brands.ts";
 import { buildAssistantConfig } from "./config.ts";
 import { buildOutboundAssistantConfig } from "./outbound/config.ts";
+
+const log = scopedLog("assistant-sync");
 
 const VAPI_API = "https://api.vapi.ai";
 

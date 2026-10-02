@@ -6,7 +6,7 @@
  *   POST /vapi/webhook  Vapi server messages (tool-calls, end-of-call-report)
  *   POST /vapi/llm/chat/completions  voice agents' brain → Azure AI Foundry (relay)
  *   /auth/*             dashboard sign-in (session cookie)
- *   /outbound/*         dashboard API + live SSE stream
+ *   /outbound/*         dashboard API + live SSE stream (+ System logs, health checks)
  *   everything else     the dashboard itself (Next.js static export)
  *
  * Boots even with empty config so the first deploy is green; each feature warns
@@ -20,7 +20,8 @@ import { Hono } from "hono";
 
 import { databaseConfigured, env, logConfigSummary } from "./config/env.ts";
 import { auth } from "./auth/routes.ts";
-import { log } from "./lib/logger.ts";
+import { scopedLog } from "./lib/logger.ts";
+import { drainLogs, installLogStore } from "./lib/logStore.ts";
 import { safeEqual } from "./lib/auth.ts";
 import { dashboardAvailable, serveDashboard } from "./lib/staticDashboard.ts";
 import { handleEndOfCallReport, handleToolCalls } from "./vapi/handlers.ts";
@@ -32,10 +33,13 @@ import {
   handleOutboundTranscript,
   isOutboundCall,
 } from "./outbound/handlers.ts";
+import { noteWebhook, setHealthVersion, startHealthMonitor } from "./outbound/health.ts";
 import { outbound } from "./outbound/routes.ts";
 import type { VapiWebhookBody } from "./vapi/types.ts";
 
-const app = new Hono();
+const log = scopedLog("server");
+const webhookLog = scopedLog("webhook");
+const httpLog = scopedLog("http");
 
 // The deployed git sha (scripts/azure/package-app.sh writes VERSION into the zip).
 const VERSION = (() => {
@@ -45,6 +49,37 @@ const VERSION = (() => {
     return "dev";
   }
 })();
+
+// Capture every log line from here on for the dashboard's System logs tab
+// (memory ring + live tail + outbound.app_log) — see src/lib/logStore.ts.
+installLogStore({ version: VERSION });
+setHealthVersion(VERSION);
+
+const app = new Hono();
+
+// Server errors land in System logs even when the route only returned
+// `c.json({ error }, 500)` without logging. Thrown errors are logged by
+// onError below (c.error set), so they aren't logged twice.
+app.use("*", async (c, next) => {
+  const started = Date.now();
+  await next();
+  if (c.res.status < 500 || c.error) return;
+  let detail: string | undefined;
+  try {
+    if ((c.res.headers.get("content-type") ?? "").includes("json")) detail = (await c.res.clone().text()).slice(0, 500);
+  } catch {
+    /* body not readable — status alone is enough */
+  }
+  httpLog.error(`${c.req.method} ${c.req.path} → ${c.res.status}`, { status: c.res.status, ms: Date.now() - started, detail });
+});
+
+app.onError((err, c) => {
+  httpLog.error(`Unhandled error in ${c.req.method} ${c.req.path}`, {
+    err: String(err),
+    stack: err instanceof Error ? err.stack?.split("\n").slice(1, 5).join(" | ") : undefined,
+  });
+  return c.json({ error: "internal error" }, 500);
+});
 
 // Fast, dependency-free liveness check for the App Service health probe (stays
 // green during boot and while the database is unreachable — see /ready).
@@ -103,15 +138,16 @@ app.post("/vapi/webhook", async (c) => {
   if (env.vapiServerSecret) {
     const provided = c.req.header("x-vapi-secret") ?? "";
     if (!safeEqual(provided, env.vapiServerSecret)) {
-      log.warn("Rejected webhook — bad x-vapi-secret");
+      webhookLog.warn("Rejected webhook — bad x-vapi-secret");
       return c.json({ error: "unauthorized" }, 401);
     }
   } else if (!env.allowInsecureWebhook) {
-    log.error("Refusing webhook — VAPI_SERVER_SECRET not set (set ALLOW_INSECURE_WEBHOOK=true for local dev only)");
+    webhookLog.error("Refusing webhook — VAPI_SERVER_SECRET not set (set ALLOW_INSECURE_WEBHOOK=true for local dev only)");
     return c.json({ error: "webhook not configured" }, 503);
   } else {
-    log.warn("VAPI_SERVER_SECRET not set — webhook is UNAUTHENTICATED (ALLOW_INSECURE_WEBHOOK)");
+    webhookLog.warn("VAPI_SERVER_SECRET not set — webhook is UNAUTHENTICATED (ALLOW_INSECURE_WEBHOOK)");
   }
+  noteWebhook(); // "Call results arriving" health check
 
   let body: VapiWebhookBody;
   try {
@@ -162,7 +198,12 @@ app.post("/vapi/webhook", async (c) => {
         return c.json({ ok: true });
     }
   } catch (err) {
-    log.error("Webhook handler error", { type: message.type, err: String(err) });
+    webhookLog.error("Webhook handler error", {
+      type: message.type,
+      callId: message.call?.id,
+      err: String(err),
+      stack: err instanceof Error ? err.stack?.split("\n").slice(1, 5).join(" | ") : undefined,
+    });
     // Return 200 so Vapi doesn't retry-storm; we've logged the failure.
     return c.json({ ok: false });
   }
@@ -182,7 +223,12 @@ app.get("*", async (c) => {
   return c.json({ error: "not found" }, 404);
 });
 
-log.info(`Axxiom voice agents starting on :${env.port}`);
+log.info(`Axxiom voice agents starting on :${env.port}`, {
+  version: VERSION,
+  instance: (process.env.WEBSITE_INSTANCE_ID ?? "").slice(0, 12) || undefined,
+  dataBackend: env.dataBackend,
+  dialerEnabled: env.dialerEnabled,
+});
 logConfigSummary((m) => log.info(m));
 void dashboardAvailable(env.dashboardDir).then((ok) =>
   log.info(`Config — Dashboard files: ${ok ? `serving ${env.dashboardDir}/` : `NOT found in ${env.dashboardDir}/`}`),
@@ -196,6 +242,9 @@ if (!env.vapiServerSecret && !env.allowInsecureWebhook) {
       "Set VAPI_SERVER_SECRET (and match it on the Vapi assistant), or ALLOW_INSECURE_WEBHOOK=true for local dev only.",
   );
 }
+
+// Run the health checks every 5 minutes and log each one that goes bad.
+if (databaseConfigured()) startHealthMonitor();
 
 // Resume the outbound worker if a campaign was left running (e.g. after a
 // deploy). Skipped entirely on a non-dialing instance (DIALER_ENABLED=false).
@@ -228,13 +277,20 @@ if (databaseConfigured() && env.outboundAssistantId && env.dialerEnabled) {
 // Process-level safety nets. Without these an unhandled rejection could crash
 // the process silently; a deploy (SIGTERM) would kill the worker mid-tick.
 process.on("unhandledRejection", (reason) => {
-  log.error("Unhandled promise rejection", { reason: String(reason) });
+  log.error("Unhandled promise rejection", {
+    reason: String(reason),
+    stack: reason instanceof Error ? reason.stack?.split("\n").slice(1, 5).join(" | ") : undefined,
+  });
 });
 process.on("uncaughtException", (err) => {
   // Log then exit so App Service restarts a clean process rather than limping
-  // along in an unknown state.
-  log.error("Uncaught exception — exiting for restart", { err: String(err) });
-  process.exit(1);
+  // along in an unknown state. Save the log line first (bounded wait) so the
+  // crash is visible in System logs after the restart.
+  log.error("Uncaught exception — exiting for restart", {
+    err: String(err),
+    stack: err.stack?.split("\n").slice(1, 5).join(" | "),
+  });
+  void drainLogs(2_000).finally(() => process.exit(1));
 });
 
 let shuttingDown = false;
@@ -252,7 +308,8 @@ async function shutdown(signal: string): Promise<void> {
   // Give in-flight webhook handlers a moment to finish, then close the
   // database pool and exit.
   setTimeout(() => {
-    void import("./lib/pg/backend.ts")
+    void drainLogs(1_500)
+      .then(() => import("./lib/pg/backend.ts"))
       .then(({ closePool }) => closePool())
       .finally(() => process.exit(0));
   }, 1500);

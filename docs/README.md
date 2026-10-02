@@ -20,6 +20,7 @@ There are two agents sharing one service:
 | [voices.md](voices.md) | Voice providers (Vapi native vs ElevenLabs), the dashboard voice picker, and the ElevenLabs Conversational AI **evaluation POC** + agent switcher. |
 | [inbound-agent.md](inbound-agent.md) | The inbound triage agent: prompt, tools, safety net, disclosure, call log. |
 | [outbound-campaigns.md](outbound-campaigns.md) | The outbound campaign end-to-end: lead import, brand auto-assignment, the dialer's guardrails, **live monitoring**, the **code-reference lookup**, dispositions → sales-ready data, **analytics + Twilio cost sync**, **AI insights / self-learning**, testing, and data retention. |
+| [monitoring.md](monitoring.md) | **System logs + health checks** — what the server logs, where it's stored, the checks (incl. "Vapi → this server"), the red banner, retention, and the Azure-side log stream. |
 | [api-reference.md](api-reference.md) | Every HTTP endpoint (with **auth requirements**) and every assistant tool (function) with its parameters. |
 | [database.md](database.md) | The schema for both flows (`ax_voice_call` + the `outbound` schema) on Azure Postgres, the analytics views, and the **access posture**. |
 | [compliance.md](compliance.md) | Disclosure + explicit consent capture, calling-window/DNC/frequency guards, retention + DSAR, audit trail, and open items needing counsel. |

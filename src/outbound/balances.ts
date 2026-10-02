@@ -17,7 +17,9 @@ import { createHmac } from "node:crypto";
 
 import { env } from "../config/env.ts";
 import { fetchWithTimeout } from "../lib/http.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
+
+const log = scopedLog("billing");
 
 const TWILIO_API = "https://api.twilio.com/2010-04-01";
 const VAPI_API = "https://api.vapi.ai";

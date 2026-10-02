@@ -18,6 +18,8 @@
  *   POST /outbound/test-call          dial an arbitrary number to test the agent
  *   GET  /outbound/export             download leads as csv/xlsx by disposition
  *   POST /outbound/admin/assistants/sync  re-apply every Vapi assistant's config (+ webhook URL)
+ *   GET  /outbound/logs               System logs (outbound.app_log; filters + paging)
+ *   GET  /outbound/system/health      health checks (Vapi routing, call updates, database, …)
  */
 
 import { Hono, type Context } from "hono";
@@ -27,8 +29,9 @@ import * as XLSX from "xlsx";
 
 import { env } from "../config/env.ts";
 import { onChange, type ChangeEvent } from "../lib/changes.ts";
+import { onLogEntry, queryLogs, type LogQuery } from "../lib/logStore.ts";
 import { fetchWithTimeout } from "../lib/http.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { requireAuth } from "../lib/auth.ts";
 import { rateLimit } from "../lib/rateLimit.ts";
 import { maskPhone } from "../lib/redact.ts";
@@ -55,6 +58,9 @@ import { getProviderBalances } from "./balances.ts";
 import { BRANDS, getBrand } from "../assistant/brands.ts";
 import { analyzeBrand, analyzeCampaign, applyInsight, rejectInsight } from "../ai/campaignInsights.ts";
 import { analyzeSystem } from "../ai/systemInsights.ts";
+import { getHealthReport } from "./health.ts";
+
+const log = scopedLog("api");
 
 export const outbound = new Hono();
 
@@ -129,7 +135,12 @@ outbound.get("/outbound/events", (c) => {
       const live = toLiveEvent(e);
       if (live) send("change", JSON.stringify(live));
     });
-    stream.onAbort(off);
+    // System logs live tail (already masked + throttled by the log store).
+    const offLog = onLogEntry((entry) => send("log", JSON.stringify(entry)));
+    stream.onAbort(() => {
+      off();
+      offLog();
+    });
     await stream.writeSSE({ event: "ready", data: "{}", retry: 5000 });
     while (!stream.aborted) {
       await stream.sleep(HEARTBEAT_MS);
@@ -137,6 +148,7 @@ outbound.get("/outbound/events", (c) => {
       await chain;
     }
     off();
+    offLog();
   });
 });
 
@@ -296,6 +308,30 @@ outbound.post("/outbound/admin/assistants/sync", async (c) => {
     items: result.items.map((i) => `${i.target}:${i.action}`),
   });
   return c.json(result, result.ok ? 200 : 500);
+});
+
+// --- System logs + health ------------------------------------------------------
+
+const LOG_LEVELS = new Set(["info", "warn", "error"]);
+
+// Newest-first page of the service's own log (outbound.app_log; this server's
+// memory when the table isn't there yet — `persisted` says which).
+outbound.get("/outbound/logs", async (c) => {
+  const level = c.req.query("level");
+  const before = Number(c.req.query("before"));
+  const query: LogQuery = {
+    level: level && LOG_LEVELS.has(level) ? (level as LogQuery["level"]) : undefined,
+    source: c.req.query("source")?.trim() || undefined,
+    q: c.req.query("q")?.trim().slice(0, 200) || undefined,
+    before: Number.isFinite(before) && before > 0 ? before : undefined,
+    limit: Number(c.req.query("limit")) || 100,
+  };
+  return c.json(await queryLogs(query));
+});
+
+// Health checks for the System logs tab (cached ~20s; ?fresh=1 re-runs them).
+outbound.get("/outbound/system/health", async (c) => {
+  return c.json(await getHealthReport({ fresh: c.req.query("fresh") === "1" }));
 });
 
 outbound.get("/outbound/campaigns", async (c) => {

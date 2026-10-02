@@ -19,8 +19,10 @@ import { Pool } from "pg";
 import type { TokenCredential } from "@azure/identity";
 
 import { env } from "../../config/env.ts";
-import { log } from "../logger.ts";
+import { scopedLog } from "../logger.ts";
 import { postgrestTypeParser } from "./shim.ts";
+
+const log = scopedLog("database");
 
 const OSSRDBMS_SCOPE = "https://ossrdbms-aad.database.windows.net/.default";
 

@@ -7,7 +7,9 @@
  */
 
 import { assertGhl, env } from "../config/env.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
+
+const log = scopedLog("ghl");
 
 const GHL_BASE = "https://services.leadconnectorhq.com";
 const GHL_VERSION = "2021-07-28";

@@ -10,8 +10,10 @@
  */
 
 import { env } from "../config/env.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { db } from "./db.ts";
+
+const log = scopedLog("twilio");
 
 const TWILIO_API = "https://api.twilio.com/2010-04-01";
 

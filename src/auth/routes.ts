@@ -10,11 +10,13 @@ import { Hono } from "hono";
 
 import { env, sessionSecret } from "../config/env.ts";
 import { clearSessionCookie, forgetCachedUser, issueSessionCookie, isSameOriginRequest, requireAuth } from "../lib/auth.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { hashPassword, passwordPolicyError, verifyAgainstDummy, verifyPassword } from "../lib/passwords.ts";
 import { rateLimit } from "../lib/rateLimit.ts";
 import { maskEmail } from "../lib/redact.ts";
 import { findUserById, findUserByEmail, setPasswordHash, touchLastLogin } from "./users.ts";
+
+const log = scopedLog("auth");
 
 export const auth = new Hono();
 

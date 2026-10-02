@@ -1,3 +1,4 @@
+import type { LiveLog } from "./live";
 import type { Call, Campaign, Lead } from "./types";
 
 /**
@@ -346,6 +347,33 @@ export interface AssistantSyncResult {
   items: { target: string; action: "updated" | "created" | "skipped" | "failed"; id?: string; detail?: string }[];
 }
 
+export type CheckStatus = "ok" | "warn" | "error";
+
+export interface HealthCheck {
+  id: string;
+  label: string;
+  status: CheckStatus;
+  detail: string;
+  fix?: string;
+}
+
+export interface HealthReport {
+  at: string;
+  status: CheckStatus;
+  checks: HealthCheck[];
+  counts: { errors1h: number; warnings1h: number; errors24h: number; warnings24h: number } | null;
+  lastWebhookAt: string | null;
+  startedAt: string;
+  version: string;
+}
+
+export interface LogsResponse {
+  logs: LiveLog[];
+  /** false = read from the server's memory (table missing / database down). */
+  persisted: boolean;
+  note?: string;
+}
+
 let brandListPromise: Promise<BrandInfoOption[]> | null = null;
 
 export const api = {
@@ -380,6 +408,18 @@ export const api = {
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(brand ? { brand } : {}) },
       120_000,
     ),
+  // System logs + health checks (System logs tab).
+  logs: async (opts: { level?: string; source?: string; q?: string; before?: number; limit?: number }): Promise<LogsResponse> => {
+    const q = new URLSearchParams();
+    if (opts.level && opts.level !== "all") q.set("level", opts.level);
+    if (opts.source) q.set("source", opts.source);
+    if (opts.q) q.set("q", opts.q);
+    if (opts.before) q.set("before", String(opts.before));
+    q.set("limit", String(opts.limit ?? 100));
+    return unwrap(await get(`/outbound/logs?${q.toString()}`)) as LogsResponse;
+  },
+  health: async (fresh = false): Promise<HealthReport> =>
+    unwrap(await request(`/outbound/system/health${fresh ? "?fresh=1" : ""}`, {}, 30_000)) as HealthReport,
   analytics: (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
     const q = new URLSearchParams({ days: String(days) });
     if (campaignId) q.set("campaignId", campaignId);

@@ -25,6 +25,12 @@ function num(key: string, fallback: number): number {
 
 export type DataBackend = "azure" | "supabase";
 
+/** LOG_PERSIST_LEVEL: info | warn | error (anything else → info). */
+function logLevel(v: string): "info" | "warn" | "error" {
+  const l = v.toLowerCase();
+  return l === "warn" || l === "error" ? l : "info";
+}
+
 /**
  * The Anthropic SDK appends /v1/messages itself, so the base must be
  * ".../anthropic", not ".../anthropic/v1/messages" (the old Railway value —
@@ -110,6 +116,11 @@ export const env = {
   // Data retention: after this many days, call transcripts/recordings/raw
   // payloads are purged by the retention job (structural rows + metrics stay).
   piiRetainDays: num("PII_RETAIN_DAYS", 90),
+  // System logs (outbound.app_log, dashboard → System logs): the lowest level
+  // persisted (info | warn | error — lower levels still show in the live tail)
+  // and how many days rows are kept.
+  logPersistLevel: logLevel(str("LOG_PERSIST_LEVEL", "info")),
+  logRetainDays: num("LOG_RETAIN_DAYS", 30),
   outboundLeadTable: str("OUTBOUND_LEAD_TABLE", "lead"),
   outboundCallTable: str("OUTBOUND_CALL_TABLE", "call"),
   outboundSchema: str("OUTBOUND_SCHEMA", "outbound"),

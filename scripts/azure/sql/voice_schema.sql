@@ -6,6 +6,7 @@
 -- tables, so they keep the exact names they had on Supabase):
 --   outbound.*            outbound qualification campaign (+ analytics views)
 --   outbound.dashboard_user  dashboard logins (replaces Supabase Auth)
+--   outbound.app_log      the service's own log (dashboard → System logs)
 --   public.ax_voice_call  inbound call log
 --
 -- This is the consolidated FINAL state of scripts/sql/outbound_schema.sql +
@@ -251,6 +252,32 @@ create table if not exists outbound.failed_op (
   created_at  timestamptz not null default now()
 );
 create index if not exists outbound_failed_op_unresolved_idx on outbound.failed_op (resolved, created_at);
+
+-- ---------------------------------------------------------------------------
+-- app_log — the service's own log (dashboard → System logs): warnings, errors
+-- and key events (calls placed/ended, health-check changes, crashes), batched
+-- in by src/lib/logStore.ts and deleted after LOG_RETAIN_DAYS (default 30).
+-- Phone numbers are masked before insert. No foreign keys on purpose: a log
+-- row must never block, or be blocked by, deleting the call/lead it mentions.
+-- ---------------------------------------------------------------------------
+create table if not exists outbound.app_log (
+  id            bigint generated always as identity primary key,
+  created_at    timestamptz not null default now(),
+  level         text not null,            -- info | warn | error
+  source        text not null,            -- dialer | outbound-call | inbound-call | webhook | api | http | monitor | …
+  message       text not null,
+  context       jsonb,
+  call_id       uuid,                     -- outbound.call.id
+  vapi_call_id  text,
+  campaign_id   uuid,
+  lead_id       uuid,
+  instance      text,
+  version       text                      -- deployed git sha
+);
+create index if not exists outbound_app_log_created_idx on outbound.app_log (created_at);
+create index if not exists outbound_app_log_level_idx   on outbound.app_log (level, created_at);
+create index if not exists outbound_app_log_call_idx    on outbound.app_log (call_id) where call_id is not null;
+create index if not exists outbound_app_log_vapi_idx    on outbound.app_log (vapi_call_id) where vapi_call_id is not null;
 
 -- ---------------------------------------------------------------------------
 -- campaign_insight — AI analysis (brand_prompt | system), human-gated apply.

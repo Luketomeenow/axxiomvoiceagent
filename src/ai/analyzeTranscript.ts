@@ -8,7 +8,9 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 import { assertAnthropic, env } from "../config/env.ts";
 import { anthropicClient } from "./client.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
+
+const log = scopedLog("ai");
 
 export interface TranscriptAnalysis {
   sentiment_score: number | null; // -1 (negative) .. 1 (positive)

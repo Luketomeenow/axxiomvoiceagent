@@ -6,7 +6,9 @@
  */
 
 import { db } from "./db.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
+
+const log = scopedLog("settings");
 
 // Throws on a failed lookup — the query builder reports errors in `{ error }`
 // rather than throwing, and a swallowed error would read as "not set" (which

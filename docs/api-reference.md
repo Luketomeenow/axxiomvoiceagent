@@ -21,6 +21,14 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 | `GET` | `/ready` | Readiness: verifies the database is reachable **and** the `outbound` schema is readable (`checks.outboundSchema`); on Azure also reports `connectedAs` (the managed identity), `database`, `serverVersion`, plus `dataBackend` and `dialerEnabled`. 503 when not. |
 | `POST` | `/vapi/webhook` | All Vapi server messages (tool-calls, status, transcript, end-of-call) for **both** agents. Routed outbound vs. inbound via `isOutboundCall(message)`. Handler errors return 200 `{ok:false}` so Vapi doesn't retry-storm. |
 
+### Monitoring (`src/outbound/routes.ts`, see [monitoring.md](monitoring.md))
+
+| Method | Path | Request | Purpose |
+|--------|------|---------|---------|
+| `GET` | `/outbound/logs` | `?level=info\|warn\|error&source=&q=&before=&limit=` (max 500) | Newest-first page of `outbound.app_log`. `level` is a minimum (`warn` = warnings + errors); `q` searches messages, or matches call/lead/campaign/Vapi-call ids when it's a UUID; `before` = an id for paging back. `{ logs, persisted, note? }`; `persisted: false` = read from the server's memory (table missing / database down). |
+| `GET` | `/outbound/system/health` | `?fresh=1` (skip the ~20 s cache) | Health checks `{ status, checks[{ id, label, status, detail, fix? }], counts, lastWebhookAt, startedAt, version }`. |
+| SSE | `/outbound/events` | — | Besides `change` events, carries `log` events (one per log line, masked) for the live tail. |
+
 ### Campaigns & dialing (`src/outbound/routes.ts`)
 
 | Method | Path | Request | Purpose |

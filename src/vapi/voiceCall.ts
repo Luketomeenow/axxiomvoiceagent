@@ -6,7 +6,9 @@
 
 import { env } from "../config/env.ts";
 import { dataClient } from "../lib/dataClient.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
+
+const log = scopedLog("inbound-call");
 
 export interface VoiceCallRecord {
   call_id: string;

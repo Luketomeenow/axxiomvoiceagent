@@ -5,7 +5,9 @@
  */
 
 import type { Context, MiddlewareHandler } from "hono";
-import { log } from "./logger.ts";
+import { scopedLog } from "./logger.ts";
+
+const log = scopedLog("http");
 
 /**
  * The client IP. App Service's front end APPENDS "ip:port" to X-Forwarded-For,

@@ -14,13 +14,15 @@
 
 import { assertOutbound, env } from "../config/env.ts";
 import { fetchWithTimeout } from "../lib/http.ts";
-import { log } from "../lib/logger.ts";
+import { scopedLog } from "../lib/logger.ts";
 import { checkSuppression, db, recordEvent, updateCall, updateLead, type LeadRow } from "./db.ts";
 import { toE164 } from "./phone.ts";
 import { timezoneForState } from "./timezone.ts";
 import { maskPhone } from "../lib/redact.ts";
 import { type Brand, brandForState, brandByName, getBrand, resolveBrand } from "../assistant/brands.ts";
 import { getBrandAssistantId } from "./brandStore.ts";
+
+const log = scopedLog("dialer");
 
 interface BrandRouting {
   assistantId?: string;
