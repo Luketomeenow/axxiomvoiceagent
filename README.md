@@ -3,12 +3,13 @@
 AI voice agents for Axxiom Elevator, built on **Vapi** (Deepgram transcription +
 **Claude** brain + **Vapi-native / ElevenLabs** voices) with **Twilio** as the
 carrier. This repo is the **orchestration + integration layer** that Vapi calls —
-it owns the CRM logic (GoHighLevel), the call log (Supabase → Fabric), and the
-outbound calling campaigns. Two agents share one service: an **inbound** triage
+it owns the CRM logic (GoHighLevel), the call log (Azure Postgres → Fabric), and the
+outbound calling campaigns. It runs on **Azure** (App Service + Azure Database for
+PostgreSQL + Key Vault) next to the marketing hub — see [docs/azure.md](docs/azure.md). Two agents share one service: an **inbound** triage
 agent and an **outbound** qualification campaign with live monitoring, cost +
 compliance analytics, and human-gated AI self-improvement.
 
-> 📚 **Full documentation lives in [`docs/`](docs/README.md)** — setup, the
+> 📚 **Full documentation lives in [`docs/`](docs/README.md)** — setup, [Azure hosting + the cutover runbook](docs/azure.md), the
 > [per-brand agents](docs/brands.md), [voices & the ElevenLabs POC](docs/voices.md),
 > the inbound agent, outbound campaigns, the API reference, the database schema,
 > and [compliance + guardrails](docs/compliance.md). This README is the quick
@@ -33,7 +34,7 @@ site surveys, and hands off to a human when needed.
 
 ```
 Caller → Vapi (STT → Claude → ElevenLabs) ──tool-calls──▶ THIS SERVICE ──▶ GoHighLevel
-                                          ──end-of-call──▶ THIS SERVICE ──▶ Supabase ─▶ Fabric
+                                          ──end-of-call──▶ THIS SERVICE ──▶ Azure Postgres ─▶ Fabric
 ```
 
 - **Voice pipeline** — Vapi (configured in `src/assistant/`).
@@ -41,31 +42,39 @@ Caller → Vapi (STT → Claude → ElevenLabs) ──tool-calls──▶ THIS S
 - **Tools (mid-call)** — `lookupContact`, `bookSurvey`, `transferCall`
   (`src/assistant/tools.ts` → run in `src/vapi/handlers.ts`).
 - **CRM** — GoHighLevel client in `src/ghl/` (same auth as axxiommarketinghub).
-- **Call log** — `ax_voice_call` in Supabase (`src/supabase/`), mirrored to Fabric. RLS: service-role only.
+- **Call log** — `public.ax_voice_call` in Azure Postgres (`src/vapi/voiceCall.ts`), mirrored to Fabric and read by the marketing hub.
 - **Security** — `/vapi/webhook` verifies `x-vapi-secret` (constant-time) and **fails
   closed** without `VAPI_SERVER_SECRET`; the dashboard API (`/outbound/*`) requires a
-  Supabase user JWT, CORS-locked + rate-limited. See `src/lib/`.
+  signed session cookie (invite-only accounts), same-origin + rate-limited; the database
+  is reachable only by this service's managed identity. See `src/lib/`.
 
 ## Project layout
 
 ```
 src/
-  index.ts              Hono server: /health, /ready, /vapi/webhook + outbound routes
+  index.ts              Hono server: /health, /ready, /vapi/webhook, /auth, outbound routes,
+                        and the dashboard's static files (Node 22 in prod, Bun in dev)
   config/env.ts         All env, with assert* helpers (boots even if empty)
-  lib/                  auth (webhook secret + JWT middleware), rate limit, PII redaction
+  lib/                  dataClient + pg/ (Azure Postgres via managed identity), change bus
+                        (live SSE), auth (webhook secret + session middleware), rate limit,
+                        PII redaction
+  auth/                 dashboard sign-in routes + accounts
   assistant/            Inbound prompt/tools/config; brands.ts (6-brand registry);
     outbound/           outbound prompt (disclosure opener) + tools + config
   vapi/                 Inbound webhook types + handlers (tool dispatch, end-of-call)
   outbound/             dialer/worker, handlers, routes, db (retry+dead-letter),
                         twilioSync, timezone, import, voice, brandStore
   ghl/                  GoHighLevel client + domain ops
-  supabase/             ax_voice_call writer
   ai/                   Post-call transcript analysis + campaign insights (self-learning)
 scripts/
   create-assistant.ts / create-outbound-assistant.ts / create-brand-assistants.ts
   import-twilio-numbers.ts / import-leads.ts / import-codes.ts / check-outbound-db.ts
-  sql/                  ax_voice_call.sql + outbound_schema.sql (idempotent, re-run on pull)
-web/                    Next.js dashboard (login-gated) — console + /analytics
+  dashboard-user.ts     dashboard logins (invite-only; --sql for Cloud Shell)
+  build.mjs             production bundle → dist/server.mjs
+  azure/                package-app.sh, sync-app-settings.sh, migrate_from_supabase.py,
+                        sql/voice_schema.sql (the Azure schema — idempotent)
+  sql/                  legacy Supabase DDL (ax_voice_call.sql + outbound_schema.sql)
+web/                    Next.js dashboard (login-gated, static export served by the backend)
 ```
 
 ## Setup
@@ -73,7 +82,8 @@ web/                    Next.js dashboard (login-gated) — console + /analytics
 ```bash
 bun install
 cp .env.example .env        # fill in keys (see below)
-bun run dev                 # local server on :3000
+bun run dev                 # local server on :3000 (a local Postgres 18 — see docs/setup.md)
+bun test                    # data-layer contract tests
 ```
 
 Expose it for Vapi during local testing (e.g. `ngrok http 3000`) and set
@@ -90,22 +100,29 @@ Expose it for Vapi during local testing (e.g. `ngrok http 3000`) and set
 | New-lead pipeline + stage | `GHL_PIPELINE_ID`, `GHL_PIPELINE_STAGE_ID` |
 | Human/safety transfer number | `TRANSFER_PHONE_NUMBER` |
 | ElevenLabs voice id | `ELEVENLABS_VOICE_ID` (+ EL key in Vapi dashboard) |
-| Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
-| Dashboard API auth (JWT validation + CORS) | `SUPABASE_ANON_KEY`, `DASHBOARD_ORIGIN` |
+| Database (Azure Postgres, managed identity) | `DATA_BACKEND=azure`, `AZURE_PG_USER`, `AZURE_PG_CLIENT_ID` (+ host/db defaults) |
+| Dashboard session signing (≥ 32 chars) | `DASHBOARD_SESSION_SECRET` |
 | Twilio (caller-ID import + cost sync) | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` |
 
-The server **boots without these** (Railway health check stays green); each
-feature logs a warning until its keys are present.
+The server **boots without these** (the health check stays green); each
+feature logs a warning until its keys are present. In Azure they are App Service
+settings, secrets as Key Vault references (`scripts/azure/sync-app-settings.sh`).
 
-## Deploy (Railway)
+## Deploy (Azure App Service)
 
-1. `bun install` (commits `bun.lock` so Railway detects Bun).
-2. Push the repo; Railway uses `railway.json` (`bun run src/index.ts`, health `/health`).
-3. Set the env vars in Railway, including `SERVER_URL` = your Railway URL.
+```bash
+./scripts/azure/sync-app-settings.sh --apply   # vault refs + config + identity + startup/Always-On
+./scripts/azure/package-app.sh --deploy        # bundle backend + dashboard export, zip deploy
+curl https://<app>.azurewebsites.net/ready      # connectedAs = the managed identity
+```
+
+Then dashboard → Agent studio → **Re-sync Vapi assistants** whenever prompts/tools
+change. One instance only. Everything else — resources, what Zach provisions, the
+Supabase/Railway cutover — is in [docs/azure.md](docs/azure.md).
 
 ## Wire up Vapi
 
-1. Run the table DDL: `scripts/sql/ax_voice_call.sql` in Supabase.
+1. Apply the schema: `scripts/azure/sql/voice_schema.sql` (Azure Cloud Shell).
 2. Add your ElevenLabs key to Vapi (dashboard → Provider Keys).
 3. `bun run create-assistant` — creates the assistant, prints `VAPI_ASSISTANT_ID`.
 4. Put that id in `.env`, set `VAPI_PHONE_NUMBER_ID`, re-run to attach the number.
@@ -116,7 +133,7 @@ feature logs a warning until its keys are present.
 - Confirm GHL response shapes against the live account (search, free-slots,
   appointments) — marked with `TODO` in `src/ghl/api.ts`.
 - `bookSurvey` books the earliest free slot; add preferred-time matching later.
-- Per-call state is in-memory (**run a single instance**). Move to Supabase/Redis to scale out.
+- Per-call state is in-memory (**run a single instance**). Move to Postgres/Redis to scale out.
 - The inbound greeting is a fixed AI + recorded-line disclosure (AB 2905/CIPA posture);
   wording is drafted — confirm with counsel.
 
@@ -129,7 +146,7 @@ A compliant outbound calling system that dials elevator-violation leads
 gitignored — they contain lead PII), qualifies whether they want Axxiom's
 service, looks up violation **codes** accurately, dispositions each lead into
 **sales-ready** data, and is monitored live from a Next.js dashboard. Everything
-lives in a dedicated Supabase **`outbound` schema** (separate from inbound
+lives in a dedicated **`outbound` schema** in Azure Postgres (separate from inbound
 `ax_voice_call`).
 
 > See **[docs/outbound-campaigns.md](docs/outbound-campaigns.md)** for the full
@@ -146,11 +163,11 @@ Worker / call-now / test-call ─POST /call─▶ Vapi ─status/transcript/tool
                                                        │
                   outbound.call + call_event + lead disposition + sales fields
                                                        │
-Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, test-call, export─ Hono API
+Next.js dashboard ◀─live SSE stream─┘   ◀─start/pause, call-now, test-call, export─ Hono API
 ```
 
 - **Per-brand assistants** — `src/assistant/brands.ts` registry → `bun run create-brand-assistants`
-  generates one Vapi assistant per brand; the dialer routes a campaign's calls to its brand's
+  (or, on Azure, dashboard → **Re-sync Vapi assistants**) generates one Vapi assistant per brand; the dialer routes a campaign's calls to its brand's
   assistant + caller ID. (`src/assistant/outbound/` holds the shared prompt/tools/config.)
 - **Outbound assistant** — qualification prompt, deterministic AI/recorded-line
   disclosure opener, tools `confirmConsent`, `qualifyLead`, `recordDisposition`,
@@ -168,8 +185,8 @@ Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, t
   `ended_by` attribution, dispositions + sales fields).
 - **API routes** — `src/outbound/routes.ts` (campaigns, start/pause with budget,
   stats, analytics + compliance audit, insights approve/reject, Twilio sync,
-  failed-op replay, retention purge, DSAR delete, import/export, test-call) —
-  all JWT-gated.
+  failed-op replay, retention purge, DSAR delete, import/export, test-call,
+  assistant sync, the live SSE stream) — all session-gated.
 - **Dashboard** — `web/` (Next.js + Tailwind, **login-gated**): live campaign
   cards, live monitor with transcripts + end-call, leads table, campaign/brand/
   test-call controls, AI insights panel, export, and `/analytics` (funnel,
@@ -177,11 +194,11 @@ Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, t
 
 ## Setup (outbound)
 
-1. **Schema** — run `scripts/sql/outbound_schema.sql` in Supabase. Then in the
-   dashboard: enable Realtime for the `outbound` schema (Database → Replication)
-   and expose it for the API (Settings → API → Exposed schemas).
-2. **Import a region's leads** — `bun run import-leads <file.xlsx> --region "CA — Bay Area"`
-   (optionally `--sheet "Name"` / `--campaign "Name"`). Each region becomes its
+1. **Schema** — apply `scripts/azure/sql/voice_schema.sql` in Azure Cloud Shell
+   (idempotent; it also grants the app's managed identity). `/ready` confirms it.
+2. **Import a region's leads** — dashboard → **Leads → Import** (or
+   `bun run import-leads <file.xlsx> --region "CA — Bay Area"` where the database
+   is reachable; optionally `--sheet "Name"` / `--campaign "Name"`). Each region becomes its
    own campaign. Phones are normalized to E.164, deduped, and toll-free-only rows
    are flagged `bad_number`. Repeat per region.
 3. **Seed the code reference** — `bun run import-codes <codes.xlsx>` so
@@ -191,14 +208,14 @@ Next.js dashboard ◀─Supabase Realtime─┘   ◀─start/pause, call-now, t
    (`bun run import-twilio-numbers`) and keep each brand's `vapiPhoneNumberId`
    in `src/assistant/brands.ts`; `VAPI_PHONE_NUMBER_ID` is only the fallback
    number. (Vapi-provided numbers have a daily outbound cap.)
-5. **Assistants** — `bun run create-outbound-assistant` (fallback; put the
-   printed `OUTBOUND_ASSISTANT_ID` in `.env`) + `bun run create-brand-assistants`
-   (one per brand). Re-run both after pulling prompt/tool changes.
-6. **Dashboard** — in `web/`: `cp .env.local.example .env.local` (fill in
-   `NEXT_PUBLIC_SUPABASE_URL`, the **anon** key, and `NEXT_PUBLIC_API_BASE`),
-   then `npm install && npm run dev` (serves on `:3001`; the backend runs on `:3000`).
-   On the backend set `SUPABASE_ANON_KEY` + `DASHBOARD_ORIGIN`, and **invite
-   dashboard users in Supabase Auth** (login-gated, no public signup).
+5. **Assistants** — `bun run create-outbound-assistant` once (fallback; put the
+   printed `OUTBOUND_ASSISTANT_ID` in the app settings), then dashboard → Agent
+   studio → **Re-sync Vapi assistants** (creates/updates one per brand) after
+   every prompt/tool change.
+6. **Dashboard** — served by the backend itself. Create logins with
+   `bun run dashboard-user add you@axxiomelevator.com --sql` (paste the SQL in
+   Cloud Shell; invite-only, no public signup). Local dev: `cd web && npm install
+   && npm run dev` (`:3001`, proxies the API on `:3000`).
 
 Pick a region and start/pause its campaign from the dashboard. The worker dials
 eligible leads (highest `lead_score` first) within the calling window, up to the
@@ -218,7 +235,7 @@ npm run create-outbound-assistant:node
 npm run create-assistant:node    # inbound assistant
 ```
 
-(The HTTP server itself still runs under Bun — `bun run dev` / `bun run start`.)
+(The HTTP server runs under Bun locally — `bun run dev` — and under Node in production: `npm run build && npm run start:node`.)
 
 ## Outbound env
 
@@ -233,34 +250,33 @@ npm run create-assistant:node    # inbound assistant
 | Twilio cost/status sync | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` |
 | AI insights (self-learning) | `ANTHROPIC_API_KEY`, `INSIGHT_EVERY_N_CALLS` (default 25) |
 | PII retention | `PII_RETAIN_DAYS` (default 90) |
-| Dashboard API auth (backend) | `SUPABASE_ANON_KEY`, `DASHBOARD_ORIGIN` |
-| Dashboard → Supabase | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (in `web/.env.local`) |
-| Dashboard → backend | `NEXT_PUBLIC_API_BASE` |
+| Dashboard auth | `DASHBOARD_SESSION_SECRET` (≥ 32 chars), `DASHBOARD_SESSION_HOURS` (default 12) |
+| Dialing on/off per instance | `DIALER_ENABLED` (default `true`; `false` until cutover on a new host) |
 
 ## Go-live pre-flight (operational)
 
 The code guardrails are enforced, but the campaign **will misbehave** without these
 environment/config steps. Run through this before pressing **Start** on a real campaign:
 
-- [ ] **Expose the `outbound` schema** — Supabase → Settings → API → Exposed schemas →
-      add `outbound`. *If missed, every DNC lookup errors → fail-closed → **every number
-      is blocked** and the campaign dials nothing.*
-- [ ] **Enable Realtime** on `outbound` — Database → Replication. *(Live monitor /
-      dashboard won't stream otherwise.)*
-- [ ] **Re-run `scripts/sql/outbound_schema.sql`** (idempotent) so the latest columns,
-      `failed_op` dead-letter, analytics `v_*` views, and the per-run budget columns exist.
+- [ ] **`GET /ready` is green** and shows `connectedAs` = the app's managed identity.
+      *If the schema or a grant is missing, every DNC lookup errors → fail-closed →
+      **every number is blocked** and the campaign dials nothing.*
+- [ ] **Re-run `scripts/azure/sql/voice_schema.sql`** (idempotent) after pulling schema
+      changes so the latest columns, views and grants exist.
+- [ ] **`DIALER_ENABLED=true`** on the one instance that should dial (it defaults to
+      `false` on a new Azure app — the banner on the dashboard says so).
 - [ ] **`ENABLE_VOICEMAIL_DETECTION=true`** for the live run *(off by default, or the
       agent pitches answering machines)*.
 - [ ] **`VAPI_SERVER_SECRET`** set and matched in the assistants — the webhook **fails
       closed (503) without it**, so an unset secret means no call events are processed.
-- [ ] **Dashboard auth wired**: `SUPABASE_ANON_KEY` + `DASHBOARD_ORIGIN` set on the
-      backend, and dashboard users **invited in Supabase Auth** (the API is JWT-gated;
+- [ ] **Dashboard auth wired**: `DASHBOARD_SESSION_SECRET` set (≥ 32 chars) and operator
+      accounts created with `bun run dashboard-user add … --sql` (the API is session-gated;
       without a login the dashboard is unusable).
-- [ ] **Required env vars** present: `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`,
-      `OUTBOUND_ASSISTANT_ID`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (+
-      `TWILIO_*` for cost sync, `ANTHROPIC_API_KEY` for insights). Create assistants
-      (`create-outbound-assistant`, `create-brand-assistants`); seed any known DNC numbers
-      into `outbound.dnc_suppression`.
+- [ ] **Required settings** present: `VAPI_API_KEY`, `VAPI_PHONE_NUMBER_ID`,
+      `OUTBOUND_ASSISTANT_ID`, `DATA_BACKEND=azure` + `AZURE_PG_USER`/`AZURE_PG_CLIENT_ID`
+      (+ `TWILIO_*` for cost sync, `ANTHROPIC_API_KEY` for insights) — all Key Vault
+      references **Resolved** in the portal. Sync assistants (Agent studio → **Re-sync Vapi
+      assistants**); seed any known DNC numbers into `outbound.dnc_suppression`.
 - [ ] **Telephony — dial from your own Twilio DIDs.** Vapi-*provided* numbers have a
       **daily outbound-call cap** (you'll get `400 "Numbers Bought On Vapi Have A Daily Outbound
       Call Limit"` once hit, and the campaign auto-pauses). All six brands are wired to

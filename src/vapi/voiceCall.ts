@@ -1,12 +1,11 @@
 /**
- * Writes one row per call to the `ax_voice_call` table in Supabase.
- * A Fabric PySpark notebook mirrors this table into the lakehouse for Power BI,
- * matching the pattern in axxiommarketinghub/fabric/notebooks.
+ * Writes one row per inbound call to `public.ax_voice_call` — in axxiom_hub on
+ * Azure Postgres, next to the marketing hub's tables (its Voice page and the
+ * agent service read it), and mirrored to Fabric for Power BI.
  */
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-
-import { assertSupabase, env } from "../config/env.ts";
+import { env } from "../config/env.ts";
+import { dataClient } from "../lib/dataClient.ts";
 import { log } from "../lib/logger.ts";
 
 export interface VoiceCallRecord {
@@ -30,18 +29,6 @@ export interface VoiceCallRecord {
   raw?: unknown;
 }
 
-let client: SupabaseClient | undefined;
-
-function getClient(): SupabaseClient {
-  assertSupabase();
-  if (!client) {
-    client = createClient(env.supabaseUrl, env.supabaseServiceRoleKey, {
-      auth: { persistSession: false },
-    });
-  }
-  return client;
-}
-
 /**
  * Upsert a call record (idempotent on call_id). Never throws into the webhook.
  * Retries transient failures so a single blip doesn't silently drop the inbound
@@ -51,15 +38,15 @@ export async function insertVoiceCall(record: VoiceCallRecord): Promise<void> {
   const row = { campaign_type: "inbound", ...record };
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
-      const { error } = await getClient().from(env.voiceCallTable).upsert(row, { onConflict: "call_id" });
+      const { error } = await dataClient("public").from(env.voiceCallTable).upsert(row, { onConflict: "call_id" });
       if (!error) {
-        log.info("Logged call to Supabase", { callId: record.call_id, ...(attempt ? { attempt } : {}) });
+        log.info("Logged inbound call", { callId: record.call_id, ...(attempt ? { attempt } : {}) });
         return;
       }
-      log.warn("Supabase insert failed", { callId: record.call_id, attempt: attempt + 1, error: error.message });
+      log.warn("Inbound call-log write failed", { callId: record.call_id, attempt: attempt + 1, error: error.message });
     } catch (err) {
-      log.warn("Supabase insert threw", { callId: record.call_id, attempt: attempt + 1, err: String(err) });
+      log.warn("Inbound call-log write threw", { callId: record.call_id, attempt: attempt + 1, err: String(err) });
     }
   }
-  log.error("Supabase insert exhausted retries — inbound call log lost", { callId: record.call_id });
+  log.error("Inbound call-log write exhausted retries — call log lost", { callId: record.call_id });
 }

@@ -5,7 +5,7 @@
  * match by the Twilio Call SID (captured from Vapi's phoneCallProviderId) and
  * fill telephony_cost / provider_status / answered_by.
  *
- * Needs TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN in the server env (Railway) — the
+ * Needs TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN in the server env (App Service settings / Key Vault) — the
  * same creds the import CLI uses. No-ops cleanly if they aren't set.
  */
 

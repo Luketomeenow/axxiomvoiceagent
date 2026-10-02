@@ -35,7 +35,7 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
 
     model: {
       provider: "anthropic",
-      model: env.anthropicModel,
+      model: env.voiceModel, // VOICE_MODEL — the live agents' brain (see env.ts)
       // Slightly lower than inbound for more consistent qualifying.
       temperature: 0.3,
       // Cap the reply length so completions finish (and start speaking) fast —

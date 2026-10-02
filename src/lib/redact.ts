@@ -1,6 +1,6 @@
 /**
  * PII redaction for logs. Phone numbers, emails, and names should not land in
- * plaintext application logs (Railway log retention + access). Use these when
+ * plaintext application logs (App Service / Application Insights retention + access). Use these when
  * logging tool args or dial targets.
  */
 

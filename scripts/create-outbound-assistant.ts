@@ -40,16 +40,21 @@ async function main() {
 
   if (!env.serverUrl) {
     console.warn("⚠️  SERVER_URL is not set — the assistant will be created WITHOUT a webhook URL.");
-    console.warn("    Set SERVER_URL to your public/Railway URL and re-run to wire up tools + live logging.\n");
+    console.warn("    Set SERVER_URL to this service's public URL (App Service) and re-run to wire up tools + live logging.\n");
   }
   if (!env.transferPhoneNumber) {
     console.warn("ℹ️  TRANSFER_PHONE_NUMBER not set — the transferToHuman tool will be omitted.\n");
   }
 
-  // Honor the Vapi voice chosen in the dashboard (falls back to ELEVENLABS_VOICE_ID).
+  // Honor the Vapi voice chosen in the dashboard (falls back to ELEVENLABS_VOICE_ID)
+  // and an approved prompt for unbranded calls (brand_prompt:default) — otherwise
+  // re-running this script would silently revert an approved improvement.
   const { getVapiVoiceId } = await import("../src/outbound/voice.ts");
+  const { getBrandPromptOverride } = await import("../src/outbound/brandStore.ts");
   const voiceId = await getVapiVoiceId();
-  const config = buildOutboundAssistantConfig({ voiceId });
+  const promptOverride = await getBrandPromptOverride("default");
+  if (promptOverride) console.log("   (using the approved prompt override for unbranded calls)");
+  const config = buildOutboundAssistantConfig({ voiceId, promptOverride });
 
   if (env.outboundAssistantId) {
     console.log(`Updating outbound assistant ${env.outboundAssistantId}…`);

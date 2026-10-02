@@ -11,9 +11,10 @@
  * Triggered on demand from the dashboard (POST /outbound/system/analyze).
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 
 import { assertAnthropic, env } from "../config/env.ts";
+import { anthropicClient } from "./client.ts";
 import { log } from "../lib/logger.ts";
 import { db } from "../outbound/db.ts";
 
@@ -126,7 +127,7 @@ export async function analyzeSystem(): Promise<{ insightId: string; callsConside
     }
 
     assertAnthropic();
-    if (!anthropic) anthropic = new Anthropic({ apiKey: env.anthropicApiKey });
+    if (!anthropic) anthropic = anthropicClient();
     const res = await anthropic.messages.create({
       model: env.anthropicModel,
       max_tokens: 8192,

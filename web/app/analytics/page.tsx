@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
 import {
   api,
   type AnalyticsResponse,
@@ -126,13 +125,10 @@ export default function AnalyticsPage() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      const { data } = await supabase
-        .from("campaign")
-        .select("id, name, region")
-        .order("created_at", { ascending: false });
-      setCampaigns((data as CampaignOpt[]) ?? []);
-    })();
+    api
+      .campaigns()
+      .then((list) => setCampaigns(list.map((c): CampaignOpt => ({ id: c.id, name: c.name, region: c.region }))))
+      .catch(() => setCampaigns([]));
   }, []);
 
   const load = useCallback(async () => {

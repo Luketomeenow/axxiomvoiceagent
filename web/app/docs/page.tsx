@@ -232,11 +232,11 @@ export default function DocsPage() {
                 <div className="my-1.5 h-6 w-0.5 rounded bg-gradient-to-b from-white/10 to-sky-500/60" />
                 <Node k="Voice pipeline · Vapi" v="Deepgram → Claude → ElevenLabs / Vapi voice" accent />
                 <div className="my-1.5 h-6 w-0.5 rounded bg-gradient-to-b from-white/10 to-sky-500/60" />
-                <Node k="This service · Hono on Bun" v="Webhook · dialer + guardrails · handlers" accent />
+                <Node k="This service · Hono on Azure App Service" v="Webhook · dialer + guardrails · handlers · dashboard" accent />
                 <div className="my-1.5 h-6 w-0.5 rounded bg-gradient-to-b from-white/10 to-sky-500/60" />
                 <div className="flex flex-wrap justify-center gap-2.5 rounded-lg border border-dashed border-white/15 p-3">
                   <Node k="CRM" v="GoHighLevel" />
-                  <Node k="Database" v="Supabase" />
+                  <Node k="Database" v="Azure Postgres" />
                   <Node k="Telephony truth" v="Twilio REST" />
                 </div>
                 <div className="my-1.5 h-6 w-0.5 rounded bg-gradient-to-b from-white/10 to-sky-500/60" />
@@ -245,8 +245,8 @@ export default function DocsPage() {
             </div>
             <p className="mt-4 max-w-[68ch] text-sm text-slate-500">
               Vapi owns the conversation (transcript, recording, sentiment, its own cost). Twilio is the carrier and
-              owns the authoritative per-call cost, carrier status, and answered-by. The dashboard reads Supabase
-              directly over Realtime as the logged-in user.
+              owns the authoritative per-call cost, carrier status, and answered-by. The dashboard is served by this
+              service and reads through its API, with live updates streamed over server-sent events.
             </p>
           </section>
 
@@ -444,10 +444,11 @@ export default function DocsPage() {
               </div>
               <div className="card card-pad">
                 <span className="font-mono text-[10.5px] uppercase tracking-[0.12em] text-sky-400">Service &amp; data</span>
-                <h4 className="mt-2 text-lg font-bold">Hono · Supabase · GHL</h4>
+                <h4 className="mt-2 text-lg font-bold">Hono · Azure · GHL</h4>
                 <p className="mt-2 text-sm text-slate-400">
-                  A TypeScript service on Bun (Railway) owns the logic; a Next.js dashboard on Netlify. Supabase Postgres
-                  stores calls and leads; GoHighLevel is the CRM. Call data mirrors into Microsoft Fabric.
+                  A TypeScript service on Azure App Service owns the logic and serves the Next.js dashboard. Azure Database
+                  for PostgreSQL stores calls and leads (reached with a managed identity — no passwords); GoHighLevel is
+                  the CRM. Call data mirrors into Microsoft Fabric.
                 </p>
               </div>
             </div>
@@ -455,8 +456,8 @@ export default function DocsPage() {
             <ul className="mt-3 grid gap-3">
               {[
                 ["Fail-closed webhook.", "Vapi calls are verified with a shared secret, compared in constant time; no secret, no traffic."],
-                ["Authenticated dashboard.", "Every API call needs a signed-in user; access is invite-only, CORS-locked, and rate-limited."],
-                ["Row-level database security.", "Reads run as the logged-in user; the inbound call log is service-role only. PII is redacted from logs."],
+                ["Authenticated dashboard.", "Every API call needs a signed-in operator (invite-only accounts, signed session cookie); cross-site requests are refused and traffic is rate-limited."],
+                ["Locked-down database.", "Only this service can reach it, as its managed identity — no database password exists; secrets live in Azure Key Vault. PII is redacted from logs."],
               ].map(([t, d]) => (
                 <li key={t} className="grid grid-cols-[18px_1fr] gap-3 text-[15px] text-slate-300">
                   <span className="font-mono text-xs leading-6 text-sky-400">▚</span>

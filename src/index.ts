@@ -1,18 +1,27 @@
 /**
- * Axxiom inbound voice agent — HTTP service.
+ * Axxiom voice agents — HTTP service (Azure App Service, Node 22; `bun run dev` locally).
  *
- *   GET  /health        Railway health check
- *   POST /vapi/webhook   Vapi server messages (tool-calls, end-of-call-report)
+ *   GET  /health        liveness (App Service health check)
+ *   GET  /ready         dependency-aware readiness (database + identity)
+ *   POST /vapi/webhook  Vapi server messages (tool-calls, end-of-call-report)
+ *   /auth/*             dashboard sign-in (session cookie)
+ *   /outbound/*         dashboard API + live SSE stream
+ *   everything else     the dashboard itself (Next.js static export)
  *
  * Boots even with empty config so the first deploy is green; each feature warns
  * until its keys are present.
  */
 
+import { readFileSync } from "node:fs";
+
+import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 
-import { env, logConfigSummary } from "./config/env.ts";
+import { databaseConfigured, env, logConfigSummary } from "./config/env.ts";
+import { auth } from "./auth/routes.ts";
 import { log } from "./lib/logger.ts";
 import { safeEqual } from "./lib/auth.ts";
+import { dashboardAvailable, serveDashboard } from "./lib/staticDashboard.ts";
 import { handleEndOfCallReport, handleToolCalls } from "./vapi/handlers.ts";
 import {
   handleOutboundEndOfCall,
@@ -26,29 +35,59 @@ import type { VapiWebhookBody } from "./vapi/types.ts";
 
 const app = new Hono();
 
-app.get("/", (c) => c.text("Axxiom voice agents — see /health"));
-// Fast, dependency-free liveness check for Railway (stays green during boot).
-app.get("/health", (c) => c.json({ ok: true, service: "axxiom-voice-agents" }));
+// The deployed git sha (scripts/azure/package-app.sh writes VERSION into the zip).
+const VERSION = (() => {
+  try {
+    return readFileSync("VERSION", "utf8").trim();
+  } catch {
+    return "dev";
+  }
+})();
 
-// Dependency-aware readiness: confirms Supabase is reachable AND the `outbound`
-// schema is actually exposed (a common misconfig that makes every DNC check
-// fail-closed, silently halting the dialer while /health stays green).
+// Fast, dependency-free liveness check for the App Service health probe (stays
+// green during boot and while the database is unreachable — see /ready).
+app.get("/health", (c) => c.json({ ok: true, service: "axxiom-voice-agents", version: VERSION }));
+
+// Dependency-aware readiness: confirms the database is reachable AND the
+// `outbound` schema is there (a missing schema/grant makes every DNC check
+// fail-closed, silently halting the dialer while /health stays green). On Azure
+// it also reports WHO the app connected as — the managed-identity → Entra token
+// → Postgres chain, end to end.
 app.get("/ready", async (c) => {
   const checks: Record<string, boolean> = {};
-  if (env.supabaseUrl && env.supabaseServiceRoleKey) {
+  const info: Record<string, unknown> = { dataBackend: env.dataBackend, dialerEnabled: env.dialerEnabled };
+  if (databaseConfigured()) {
     try {
       const { db } = await import("./outbound/db.ts");
       const { error } = await db().from("campaign").select("id", { count: "exact", head: true });
       checks.outboundSchema = !error;
-    } catch {
+      if (error) info.outboundSchemaError = error.message;
+    } catch (err) {
       checks.outboundSchema = false;
+      info.outboundSchemaError = String(err);
     }
+    if (env.dataBackend === "azure") {
+      try {
+        const { pgWhoAmI } = await import("./lib/pg/backend.ts");
+        const who = await pgWhoAmI();
+        info.connectedAs = who.user;
+        info.database = who.database;
+        info.serverVersion = who.version;
+      } catch (err) {
+        checks.database = false;
+        info.databaseError = String(err);
+      }
+    }
+  } else {
+    checks.databaseConfigured = false;
   }
   const ok = Object.values(checks).every(Boolean);
-  return c.json({ ok, checks }, ok ? 200 : 503);
+  return c.json({ ok, checks, ...info }, ok ? 200 : 503);
 });
 
-// Outbound campaign API (campaigns, stats, start/pause, call-now, export).
+// Dashboard sign-in, then the outbound campaign API (campaigns, stats,
+// start/pause, call-now, export, live stream).
+app.route("/", auth);
 app.route("/", outbound);
 
 app.post("/vapi/webhook", async (c) => {
@@ -123,8 +162,25 @@ app.post("/vapi/webhook", async (c) => {
   }
 });
 
+// The dashboard (static export). Registered last so API routes win; unknown
+// API paths get a JSON 404 instead of the dashboard's HTML 404 page.
+const API_PREFIXES = ["/outbound/", "/auth/", "/vapi/"];
+app.get("*", async (c) => {
+  const path = c.req.path;
+  if (API_PREFIXES.some((p) => path.startsWith(p))) return c.json({ error: "not found" }, 404);
+  const res = await serveDashboard(env.dashboardDir, path);
+  if (res) return res;
+  if (path === "/") {
+    return c.text(`Axxiom voice agents — dashboard not built into ${env.dashboardDir}/ (see /health, /ready)`);
+  }
+  return c.json({ error: "not found" }, 404);
+});
+
 log.info(`Axxiom voice agents starting on :${env.port}`);
 logConfigSummary((m) => log.info(m));
+void dashboardAvailable(env.dashboardDir).then((ok) =>
+  log.info(`Config — Dashboard files: ${ok ? `serving ${env.dashboardDir}/` : `NOT found in ${env.dashboardDir}/`}`),
+);
 
 // Loud boot guard: an unconfigured webhook secret now fails closed at request
 // time, so surface it clearly at startup rather than silently accepting calls.
@@ -135,8 +191,9 @@ if (!env.vapiServerSecret && !env.allowInsecureWebhook) {
   );
 }
 
-// Resume the outbound worker if a campaign was left running (e.g. after a deploy).
-if (env.supabaseUrl && env.supabaseServiceRoleKey && env.outboundAssistantId) {
+// Resume the outbound worker if a campaign was left running (e.g. after a
+// deploy). Skipped entirely on a non-dialing instance (DIALER_ENABLED=false).
+if (databaseConfigured() && env.outboundAssistantId && env.dialerEnabled) {
   void (async () => {
     try {
       const { db } = await import("./outbound/db.ts");
@@ -168,8 +225,8 @@ process.on("unhandledRejection", (reason) => {
   log.error("Unhandled promise rejection", { reason: String(reason) });
 });
 process.on("uncaughtException", (err) => {
-  // Log then exit so Railway (ON_FAILURE) restarts a clean process rather than
-  // limping along in an unknown state.
+  // Log then exit so App Service restarts a clean process rather than limping
+  // along in an unknown state.
   log.error("Uncaught exception — exiting for restart", { err: String(err) });
   process.exit(1);
 });
@@ -186,15 +243,30 @@ async function shutdown(signal: string): Promise<void> {
   } catch (err) {
     log.warn("Error stopping worker on shutdown", { err: String(err) });
   }
-  // Give in-flight webhook handlers a moment to finish, then exit.
-  setTimeout(() => process.exit(0), 1500);
+  // Give in-flight webhook handlers a moment to finish, then close the
+  // database pool and exit.
+  setTimeout(() => {
+    void import("./lib/pg/backend.ts")
+      .then(({ closePool }) => closePool())
+      .finally(() => process.exit(0));
+  }, 1500);
 }
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
 process.on("SIGINT", () => void shutdown("SIGINT"));
 
-export default {
-  port: env.port,
-  fetch: app.fetch,
-  // Default is 10s; give outbound control calls (e.g. end-call) more headroom.
-  idleTimeout: 30,
-};
+// Bun (local dev: `bun run dev`) serves the default export; Node (App Service:
+// `node dist/server.mjs`) needs an explicit HTTP server.
+const isBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
+if (!isBun) {
+  serve({ fetch: app.fetch, port: env.port }, (info) => log.info(`Listening on :${info.port} (node)`));
+}
+
+export default isBun
+  ? {
+      port: env.port,
+      fetch: app.fetch,
+      // Default is 10s; give outbound control calls (e.g. end-call) more
+      // headroom. SSE heartbeats (25s) keep dashboard streams under this.
+      idleTimeout: 30,
+    }
+  : undefined;

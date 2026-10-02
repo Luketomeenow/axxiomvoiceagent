@@ -137,7 +137,7 @@ export function VoicePicker() {
 
       {error && (
         <p className="mt-3 text-xs text-amber-300">
-          Couldn&apos;t list voices ({error}). Add <code>ELEVENLABS_API_KEY</code> to the backend (.env + Railway) for the
+          Couldn&apos;t list voices ({error}). Add <code>ELEVENLABS_API_KEY</code> to the backend (.env locally, App Service settings / Key Vault in Azure) for the
           full list with previews — you can still paste a voiceId above. Current ({target}):{" "}
           <code>{current[target] || "—"}</code>
         </p>

@@ -20,3 +20,6 @@ ghl-location-tokens.json
 data/
 *.xlsx
 *.csv
+
+# Azure deploy staging (scripts/azure/package-app.sh)
+.azure-stage/

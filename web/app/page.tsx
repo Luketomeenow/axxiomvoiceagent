@@ -16,13 +16,15 @@ import { InsightsPanel } from "@/components/InsightsPanel";
 import { SystemInsightsPanel } from "@/components/SystemInsightsPanel";
 import { AgentSwitcher } from "@/components/AgentSwitcher";
 import { LiveStatus } from "@/components/LiveStatus";
+import { UserMenu } from "@/components/UserMenu";
+import { AssistantSyncCard } from "@/components/AssistantSyncCard";
 
 /**
  * The console is split into tabs so one page isn't doing everything at once.
  * Every panel stays MOUNTED (inactive ones are CSS-hidden) — LiveMonitor only
- * receives transcript lines via Realtime inserts, so unmounting it mid-call
+ * receives transcript lines from the live stream, so unmounting it mid-call
  * would drop the transcript collected so far; keeping panels mounted also
- * preserves each component's Realtime subscription and avoids refetch churn.
+ * keeps each panel subscribed to the (one, shared) stream and avoids refetch churn.
  * The active tab syncs to the URL hash (#calls, #leads, #agent) for deep links.
  */
 const TABS = [
@@ -84,6 +86,7 @@ export default function Page() {
                 📖 Docs
               </Link>
               <LiveStatus />
+              <UserMenu />
             </div>
           </div>
 
@@ -149,6 +152,7 @@ export default function Page() {
           </div>
           <InsightsPanel />
           <SystemInsightsPanel />
+          <AssistantSyncCard />
         </div>
       </main>
     </div>

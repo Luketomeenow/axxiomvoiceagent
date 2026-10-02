@@ -1,16 +1,18 @@
 # Database
 
-Supabase Postgres. Two areas: the inbound call log in `public`, and the outbound campaign in its own `outbound` schema. DDL lives in `scripts/sql/` and is **idempotent — re-run both files top-to-bottom after every pull** (newer columns/views/RLS live in later blocks of the same files).
+**Azure Database for PostgreSQL** — server `psql-axxiom-marketing`, database `axxiom_hub` (the marketing hub's warehouse; the hub's Voice page, report emails and agent service read these tables, so names and columns are a shared contract). Two areas: the inbound call log in `public`, and the outbound campaign in its own `outbound` schema. The DDL is **`scripts/azure/sql/voice_schema.sql`** — idempotent, applied from Azure Cloud Shell; re-run it after pulling schema changes. (`scripts/sql/*.sql` are the legacy Supabase versions of the same tables.)
 
-## Inbound — `ax_voice_call` (`scripts/sql/ax_voice_call.sql`)
+Only this service connects: it logs in as its **managed identity** (`umi-axxiom-voice`, an Entra token as the password — see [azure.md](azure.md)) through `src/lib/dataClient.ts`. The dashboard never touches the database; it reads through the API.
 
-One row per inbound call, written by `src/supabase/voiceCall.ts` and mirrored to Fabric. Table name overridable via `VOICE_CALL_TABLE`. Key columns: `call_id (unique), caller_number, call_type, outcome, ended_reason, duration_seconds, booked_appointment, appointment_time, transferred_to_human, transcript, summary, sentiment_score, objections[], next_best_action, recording_url, raw`.
+## Inbound — `public.ax_voice_call`
 
-**RLS: service-role only.** RLS is enabled with **no** anon/authenticated policy (and select revoked) — inbound transcripts/recordings/caller numbers are reachable only through the backend.
+One row per inbound call, written by `src/vapi/voiceCall.ts` and mirrored to Fabric. Table name overridable via `VOICE_CALL_TABLE`. Key columns: `call_id (unique), caller_number, call_type, outcome, ended_reason, duration_seconds, booked_appointment, appointment_time, transferred_to_human, transcript, summary, sentiment_score, objections[], next_best_action, recording_url, raw`.
 
-## Outbound — `outbound` schema (`scripts/sql/outbound_schema.sql`)
+**Access:** read/write for the app's role; read-only for the hub's identity (`voice.reader_role` in the schema file). Nothing else.
 
-Written by the backend with the service-role key (schema client in `src/outbound/db.ts`); read by the dashboard **as the logged-in user** (authenticated-only RLS) + Realtime. The schema must be in Supabase's **Exposed schemas** (checked by `/ready`).
+## Outbound — `outbound` schema
+
+Read and written only by the backend (`db()` in `src/outbound/db.ts`, default schema `outbound`). `/ready` checks it's reachable with the app's grants.
 
 ### `campaign`
 A named run over a region's leads, with calling guardrails.
@@ -62,12 +64,15 @@ Small key/value store for runtime config. Keys in use:
 Read by `GET /outbound/analytics` + `/analytics/compliance` and the dashboard `/analytics` page:
 - **`v_campaign_funnel`** — per-campaign totals: leads, contacted, qualified, needs_followup, not_interested, no-contact, removed, DNC, attempts.
 - **`v_daily_metrics`** — per-day (Pacific) calls, qualified, transferred, voicemail, no-answer, failed, avg duration.
-- **`v_call_quality`** — per campaign **and brand** (≈ per caller ID): calls, completed, connected, avg duration/talk, avg sentiment, transferred, voicemail, no-answer, failed, stale, `ended_customer/agent/operator/system`, `vapi_cost`, `telephony_cost`, `total_cost`. (Defined twice in the file — the final definition wins; that's why re-running the whole file matters.)
+- **`v_call_quality`** — per campaign **and brand** (≈ per caller ID): calls, completed, connected, avg duration/talk, avg sentiment, transferred, voicemail, no-answer, failed, stale, `ended_customer/agent/operator/system`, `vapi_cost`, `telephony_cost`, `total_cost`.
 - **`v_attempt_distribution`** — leads + qualified by attempt count.
 - **`v_compliance_audit`** — per call: disclosure logged, consent captured/at, and whether the audit events exist.
 
-## Realtime & RLS
+### `dashboard_user`
+Dashboard logins (replaced Supabase Auth): `email` (unique, lowercase), `name`, `password_hash` (scrypt — `src/lib/passwords.ts`), `role`, `disabled`, `session_version` (bumped on password change/disable → every session for that user is signed out), `last_login_at`. Rows are created with `bun run dashboard-user` (see [azure.md](azure.md#dashboard-accounts)). **Never granted to the hub's reader role.**
 
-- **Realtime**: `lead`, `call`, `call_event`, `campaign` are added to the `supabase_realtime` publication — enable Realtime for the `outbound` schema under **Database → Replication**.
-- **RLS (hardened)**: every table has RLS enabled; the SQL's security-hardening block drops the old permissive policies and recreates all reads as **`to authenticated`** — `anon` select is **revoked** on tables, views, and future objects. Views run `security_invoker` (they execute with the reader's rights, not the owner's). The dashboard therefore only works for **logged-in** Supabase Auth users (provisioned invite-only); all writes go through the backend service role (bypasses RLS).
-- Also required: expose the `outbound` schema under **Settings → API → Exposed schemas** — without it every backend query 500s and the dialer fail-closes (verified by `/ready` and `bun run check-db`).
+## Live updates & access
+
+- **Live updates** (formerly Supabase Realtime): every successful write the backend makes through `dataClient()` publishes one change event per statement (`src/lib/changes.ts`); `GET /outbound/events` streams the `campaign`, `call`, `call_event`, `lead` and `campaign_insight` ones to the dashboard as server-sent events. No database publication or trigger is involved — the backend is the only writer.
+- **Access**: plain GRANTs, no RLS layer (no browser ever connects). `voice.app_role` = read/write on `outbound.*` + `public.ax_voice_call`; `voice.reader_role` = read-only, minus `dashboard_user`. Both set at the top of `voice_schema.sql`.
+- **No laptop access**: the server firewall allows Azure services only — admin SQL runs in Cloud Shell. Your login defaults to role `dataservices@…`; `set role "<your email>"` first so you own what you create (the schema file does this).

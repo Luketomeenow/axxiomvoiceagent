@@ -28,7 +28,7 @@ export function buildAssistantConfig() {
 
     model: {
       provider: "anthropic",
-      model: env.anthropicModel,
+      model: env.voiceModel, // VOICE_MODEL — the live agents' brain (see env.ts)
       temperature: 0.4,
       // Keep replies short so they start playing fast (prompt asks for 1-2 sentences).
       maxTokens: 250,

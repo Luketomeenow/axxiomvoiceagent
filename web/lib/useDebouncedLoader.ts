@@ -21,7 +21,7 @@ export interface Loader {
  * `trigger()` debounces (trailing) and coalesces: if a trigger lands while a
  * load is in flight, exactly one follow-up load runs after it settles. A
  * generation counter ensures only the newest run writes `error`, and `fn` must
- * THROW on failure (check the supabase `{ error }` and throw) so the panel can
+ * THROW on failure (the api helpers throw on `{ error }` responses) so the panel can
  * surface a stale-data indicator instead of rendering an empty state.
  */
 export function useDebouncedLoader(fn: () => Promise<void>, opts?: { debounceMs?: number }): Loader {

@@ -12,30 +12,8 @@
 
 import { assertVapi, env } from "../src/config/env.ts";
 import { BRANDS, getBrand } from "../src/assistant/brands.ts";
-import { buildOutboundAssistantConfig } from "../src/assistant/outbound/config.ts";
-import {
-  appSettingReady,
-  getBrandAssistantId,
-  getBrandPromptOverride,
-  getBrandVoiceId,
-  setBrandAssistantId,
-} from "../src/outbound/brandStore.ts";
-import { redactSecretsDeep } from "../src/lib/redact.ts";
-
-const VAPI_API = "https://api.vapi.ai";
-
-async function vapi(path: string, method: string, body?: unknown) {
-  const res = await fetch(VAPI_API + path, {
-    method,
-    headers: { Authorization: `Bearer ${env.vapiApiKey}`, "Content-Type": "application/json" },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  const json = text ? JSON.parse(text) : {};
-  if (!res.ok)
-    throw new Error(`Vapi ${method} ${path} → ${res.status}: ${JSON.stringify(redactSecretsDeep(json)).slice(0, 500)}`);
-  return json as { id?: string };
-}
+import { syncBrandAssistant } from "../src/assistant/sync.ts";
+import { appSettingReady } from "../src/outbound/brandStore.ts";
 
 async function main() {
   assertVapi();
@@ -44,9 +22,10 @@ async function main() {
   }
   if (!(await appSettingReady())) {
     console.error(
-      "❌ outbound.app_setting isn't reachable. Run scripts/sql/outbound_schema.sql in Supabase\n" +
-        "   (and expose the `outbound` schema) before creating brand assistants — otherwise the\n" +
-        "   ids can't be saved and the dialer can't route to them.",
+      "❌ outbound.app_setting isn't reachable, so brand assistant ids can't be read or saved.\n" +
+        "   Apply the schema first (Azure: scripts/azure/sql/voice_schema.sql). On Azure a laptop can't\n" +
+        "   reach the database at all — run the same sync server-side instead: dashboard → Agent studio →\n" +
+        "   \"Re-sync Vapi assistants\" (POST /outbound/admin/assistants/sync).",
     );
     process.exit(1);
   }
@@ -58,30 +37,15 @@ async function main() {
     process.exit(1);
   }
 
+  // Same code path as the server-side sync (src/assistant/sync.ts): honors the
+  // brand's chosen voice + approved prompt override, PATCHes existing
+  // assistants, creates missing ones and stores their ids in app_setting.
   for (const brand of brands) {
     if (!brand) continue;
-    const voiceId = (await getBrandVoiceId(brand.slug)) ?? brand.voiceId;
-    // Honor an approved self-learning prompt override so a redeploy doesn't
-    // clobber an improvement that was reviewed + applied.
-    const promptOverride = await getBrandPromptOverride(brand.slug);
-    const config = buildOutboundAssistantConfig({ brand, voiceId, promptOverride });
-    if (promptOverride) console.log(`   (using approved prompt override for ${brand.slug})`);
-    const existing = await getBrandAssistantId(brand.slug);
-
-    try {
-      if (existing) {
-        await vapi(`/assistant/${existing}`, "PATCH", config);
-        console.log(`✅ ${brand.displayName}: updated ${existing}`);
-      } else {
-        const created = await vapi("/assistant", "POST", config);
-        const id = created.id ?? "";
-        await setBrandAssistantId(brand.slug, id);
-        console.log(`✅ ${brand.displayName}: created ${id}`);
-      }
-      console.log(`   caller-ID phoneNumberId: ${brand.vapiPhoneNumberId ?? "(none set)"}\n`);
-    } catch (err) {
-      console.error(`❌ ${brand.displayName}: ${String(err)}\n`);
-    }
+    const r = await syncBrandAssistant(brand);
+    const icon = r.action === "failed" ? "❌" : "✅";
+    console.log(`${icon} ${brand.displayName}: ${r.action}${r.id ? ` ${r.id}` : ""}${r.detail ? ` — ${r.detail}` : ""}`);
+    console.log(`   caller-ID phoneNumberId: ${brand.vapiPhoneNumberId ?? "(none set)"}\n`);
   }
 }
 

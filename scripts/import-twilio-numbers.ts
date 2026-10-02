@@ -211,7 +211,7 @@ async function main(): Promise<void> {
 
   const attachServer = !!flags.server;
   if (attachServer && !env.serverUrl) {
-    console.error("--server needs SERVER_URL set (the public webhook base, e.g. https://…railway.app).");
+    console.error("--server needs SERVER_URL set (the public webhook base, e.g. https://…azurewebsites.net).");
     process.exit(1);
   }
 

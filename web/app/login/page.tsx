@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
+import { api } from "@/lib/api";
 
-/** Invite-only operator login (no public signup — users are provisioned in Supabase Auth). */
+/** Invite-only operator login (no public signup — accounts are provisioned with `bun run dashboard-user add`). */
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -16,10 +16,10 @@ export default function LoginPage() {
     e.preventDefault();
     setBusy(true);
     setError(null);
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    const result = await api.login(email, password).catch((err) => ({ ok: false, error: String(err) }));
     setBusy(false);
-    if (error) {
-      setError(error.message);
+    if (!result.ok) {
+      setError(result.error ?? "Sign-in failed.");
       return;
     }
     router.replace("/");

@@ -6,9 +6,10 @@
  *  - DNC suppression check before every dial
  *  - max attempts per lead + concurrency cap
  *
- * A single in-process worker (fine for one Railway instance) ticks while the
+ * A single in-process worker (fine for one App Service instance) ticks while the
  * campaign is `running`. Manual "call now" bypasses the worker but keeps the
- * same guardrails.
+ * same guardrails. DIALER_ENABLED=false turns ALL of it off on an instance
+ * (worker + call-now + test calls) — see dispatchCall / startCampaignWorker.
  */
 
 import { assertOutbound, env } from "../config/env.ts";
@@ -114,6 +115,8 @@ export interface DialResult {
   callRowId?: string;
 }
 
+const DIALING_DISABLED: DialResult = { ok: false, reason: "dialing is disabled on this instance (DIALER_ENABLED=false)" };
+
 /** True if `now` falls inside [start, end) local hours for the given timezone. */
 export function isWithinCallingWindow(timezone: string, start: number, end: number, now = new Date()): boolean {
   const hour = Number(
@@ -215,6 +218,9 @@ async function dispatchCall(opts: {
   brand?: string | null; // resolved brand slug (denormalized for analytics)
   attemptNumber?: number | null; // which attempt this is for the lead (1-based)
 }): Promise<DialResult> {
+  // Every dial path (campaign tick, call-now, test call) lands here, so this is
+  // the one gate that guarantees a non-dialing instance never places a call.
+  if (!env.dialerEnabled) return DIALING_DISABLED;
   assertOutbound();
 
   // Create the call row first so the webhook can link events even if it races
@@ -287,6 +293,7 @@ async function dispatchCall(opts: {
  * (manual call-now passes `ignoreWindow` but still checks DNC).
  */
 export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } = {}): Promise<DialResult> {
+  if (!env.dialerEnabled) return DIALING_DISABLED;
   assertOutbound();
 
   const phone = lead.dial_phone;
@@ -318,7 +325,7 @@ export async function placeCall(lead: LeadRow, opts: { ignoreWindow?: boolean } 
   if (sup.suppressed) {
     if (sup.reason === "lookup_error") {
       // Don't poison the lead as DNC for a connectivity/config problem.
-      return { ok: false, reason: `DNC check failed (Supabase error): ${sup.error}` };
+      return { ok: false, reason: `DNC check failed (database error): ${sup.error}` };
     }
     await updateLead(lead.id, { dnc: true, disposition: "dnc" });
     return { ok: false, reason: "number is suppressed (DNC)" };
@@ -499,6 +506,7 @@ export interface TestCallInput {
  * honors DNC. The call appears in the live monitor (metadata.kind = "test").
  */
 export async function testCall(input: TestCallInput): Promise<DialResult> {
+  if (!env.dialerEnabled) return DIALING_DISABLED;
   assertOutbound();
 
   const phone = toE164(input.phone) ?? input.phone.trim();
@@ -506,7 +514,7 @@ export async function testCall(input: TestCallInput): Promise<DialResult> {
   const sup = await checkSuppression(phone);
   if (sup.suppressed) {
     if (sup.reason === "lookup_error") {
-      return { ok: false, reason: `DNC check failed (Supabase error): ${sup.error}` };
+      return { ok: false, reason: `DNC check failed (database error): ${sup.error}` };
     }
     return { ok: false, reason: "number is suppressed (DNC)" };
   }
@@ -831,8 +839,16 @@ function isSystemicDialError(reason?: string): boolean {
   );
 }
 
+let warnedDisabled = false;
+
 export function startCampaignWorker(): void {
   if (timer) return;
+  if (!env.dialerEnabled) {
+    // Not even the stale-call sweeper: another host owns the calls in flight.
+    if (!warnedDisabled) log.warn("Campaign worker NOT started — DIALER_ENABLED=false on this instance");
+    warnedDisabled = true;
+    return;
+  }
   log.info("Campaign worker started", { tickMs: TICK_MS });
   timer = setInterval(() => {
     runCampaignTick().catch((err) => log.error("Campaign tick failed", { err: String(err) }));

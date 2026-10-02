@@ -1,28 +1,20 @@
 /**
- * Supabase access scoped to the `outbound` schema (separate from the inbound
+ * Database access scoped to the `outbound` schema (separate from the inbound
  * `public.ax_voice_call` flow). Used by the dialer, webhook handlers, and the
- * Hono API routes. The Next.js dashboard talks to Supabase directly with the
- * anon key + Realtime; this client uses the service role for writes.
+ * Hono API routes — this service is the only thing that touches the database;
+ * the dashboard reads through the API and gets live updates over SSE.
  */
 
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { assertSupabase, env } from "../config/env.ts";
+import { env } from "../config/env.ts";
+import { dataClient } from "../lib/dataClient.ts";
 import { log } from "../lib/logger.ts";
 import { maskPhone } from "../lib/redact.ts";
 
-let client: SupabaseClient | undefined;
-
-/** Service-role client whose default schema is `outbound`. */
+/** Client whose default schema is `outbound` (Azure Postgres, or legacy Supabase). */
 export function db(): SupabaseClient {
-  assertSupabase();
-  if (!client) {
-    client = createClient(env.supabaseUrl, env.supabaseServiceRoleKey, {
-      auth: { persistSession: false },
-      db: { schema: env.outboundSchema },
-    }) as unknown as SupabaseClient;
-  }
-  return client;
+  return dataClient(env.outboundSchema);
 }
 
 // --- Domain types ----------------------------------------------------------
@@ -120,7 +112,7 @@ export interface CallRow {
 }
 
 // --- Write resilience ------------------------------------------------------
-// Supabase calls resolve with `{ error }` rather than throwing, so a failed
+// Query-builder calls resolve with `{ error }` rather than throwing, so a failed
 // write used to be silently ignored (the agent kept talking; the lead's data
 // was lost). These helpers retry transient failures and, when retries are
 // exhausted, persist the attempted write to `failed_op` (a dead-letter table)
@@ -204,7 +196,7 @@ export type SuppressionCheck =
  * Check whether a number is on the suppression list.
  *
  * Fails closed (suppress) on error for compliance, BUT distinguishes a real
- * DNC hit (`listed`) from a Supabase/connectivity problem (`lookup_error`) so
+ * DNC hit (`listed`) from a database/connectivity problem (`lookup_error`) so
  * callers can surface an actionable reason instead of a misleading "DNC".
  */
 export async function checkSuppression(phone: string): Promise<SuppressionCheck> {

@@ -6,7 +6,7 @@ The inbound agent answers every call to Axxiom 24/7. Its scope is **customer inq
 
 ```
 Caller → Vapi (STT → Claude → ElevenLabs) ──tool-calls──▶ THIS SERVICE ──▶ GoHighLevel
-                                          ──end-of-call──▶ THIS SERVICE ──▶ Supabase (ax_voice_call)
+                                          ──end-of-call──▶ THIS SERVICE ──▶ Azure Postgres (ax_voice_call)
 ```
 
 The assistant config (`src/assistant/config.ts`) is pushed to Vapi by `bun run create-assistant`. The brain is Claude (`ANTHROPIC_MODEL`, default `claude-sonnet-4-6`) with the system prompt in `src/assistant/systemPrompt.ts`.
@@ -38,7 +38,7 @@ Full parameter schemas are in [api-reference.md](api-reference.md).
 
 ## Call log
 
-Every completed call writes a row to `ax_voice_call` in Supabase (`src/supabase/voiceCall.ts`), mirrored to Fabric. If `ENABLE_TRANSCRIPT_ANALYSIS=true` (and `ANTHROPIC_API_KEY` is set), a post-call Claude pass adds sentiment / objections / next-best-action (`src/ai/analyzeTranscript.ts`). The table is **RLS-locked to the service role** (no anon/authenticated reads — it holds full transcripts + caller numbers). The handler also tags the GHL contact with the outcome (`voice-booked` / `voice-transferred` / `voice-handled`).
+Every completed call writes a row to `public.ax_voice_call` in Azure Postgres (`src/vapi/voiceCall.ts`), mirrored to Fabric and read by the marketing hub's Voice page. If `ENABLE_TRANSCRIPT_ANALYSIS=true` (and `ANTHROPIC_API_KEY` is set), a post-call Claude pass adds sentiment / objections / next-best-action (`src/ai/analyzeTranscript.ts`). Only the backend (read/write) and the hub's identity (read-only) have grants on it — it holds full transcripts + caller numbers. The handler also tags the GHL contact with the outcome (`voice-booked` / `voice-transferred` / `voice-handled`).
 
 ## Configuration knobs
 
@@ -47,6 +47,6 @@ The prompt is templated from business-config env vars so it stays generic: `COMP
 ## Production notes
 
 - `/vapi/webhook` **requires `VAPI_SERVER_SECRET`** (fails closed with 503 when unset) — the create script writes the secret into the assistant's server config.
-- Per-call state is in-memory (single instance). Move to Supabase/Redis before scaling out.
+- Per-call state is in-memory (single instance). Move to Postgres/Redis before scaling out.
 - Confirm GHL response shapes (search, free-slots, appointments) against the live account — marked `TODO` in `src/ghl/api.ts`.
 - The AI/recording disclosure is deterministic (fixed greeting), not model-generated; keep it in sync with the recording posture in `config.ts`. Wording is drafted — confirm with counsel.

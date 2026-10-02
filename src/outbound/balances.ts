@@ -10,7 +10,7 @@
  * shows "n/a" with a link to the Vapi billing page instead of a number.
  *
  * Results are cached in-memory for 60s so dashboard loads don't hammer either
- * provider (single Railway instance — same assumption as the rest of the app).
+ * provider (single App Service instance — same assumption as the rest of the app).
  */
 
 import { createHmac } from "node:crypto";

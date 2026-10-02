@@ -1,7 +1,7 @@
 /**
  * Handlers for the Vapi server messages we care about:
  *  - "tool-calls"          → run lookupContact / bookSurvey, return results
- *  - "end-of-call-report"  → log the call to GHL + Supabase (+ optional analysis)
+ *  - "end-of-call-report"  → log the call to GHL + public.ax_voice_call (+ optional analysis)
  */
 
 import { env } from "../config/env.ts";
@@ -14,7 +14,7 @@ import {
   upsertContact,
 } from "../ghl/api.ts";
 import { analyzeTranscript } from "../ai/analyzeTranscript.ts";
-import { insertVoiceCall } from "../supabase/voiceCall.ts";
+import { insertVoiceCall } from "./voiceCall.ts";
 import { log } from "../lib/logger.ts";
 import { redactPII } from "../lib/redact.ts";
 import { TOOL_NAMES } from "../assistant/tools.ts";
@@ -29,7 +29,7 @@ import {
 
 /**
  * Per-call working state, keyed by Vapi call id. In-memory only — fine for a
- * single Railway instance. TODO: move to Supabase/Redis if we scale to >1 replica.
+ * single App Service instance. TODO: move to Postgres/Redis if we scale to >1 instance.
  */
 interface CallState {
   contactId?: string;

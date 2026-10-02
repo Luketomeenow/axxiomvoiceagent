@@ -1,7 +1,13 @@
 /**
- * Hono routes for the outbound campaign, consumed by the Next.js dashboard:
- *   GET  /outbound/campaigns          list campaigns + live counts
+ * Hono routes for the outbound campaign, consumed by the Next.js dashboard
+ * (served by this same service, so every call is same-origin + cookie-authed):
+ *   GET  /outbound/events             live change stream (SSE) — replaces Supabase Realtime
+ *   GET  /outbound/campaigns          list campaigns
+ *   GET  /outbound/campaigns/live     running campaigns + this-run/active/qualified counts
  *   GET  /outbound/stats              disposition breakdown
+ *   GET  /outbound/leads              one page of leads (campaign/disposition filters)
+ *   GET  /outbound/calls/active       in-flight calls (+ campaign name, lead brand)
+ *   GET  /outbound/calls/recent       recently ended calls (+ campaign name, lead brand)
  *   POST /outbound/campaign/start     mark a campaign running + start the worker
  *   POST /outbound/campaign/pause     pause campaigns + stop the worker
  *   POST /outbound/campaign/:id/update   rename / re-region a campaign
@@ -11,18 +17,22 @@
  *   POST /outbound/call-now/:leadId   manually dial one lead
  *   POST /outbound/test-call          dial an arbitrary number to test the agent
  *   GET  /outbound/export             download leads as csv/xlsx by disposition
+ *   POST /outbound/admin/assistants/sync  re-apply every Vapi assistant's config (+ webhook URL)
  */
 
 import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
+import { streamSSE } from "hono/streaming";
 import * as XLSX from "xlsx";
 
 import { env } from "../config/env.ts";
+import { onChange, type ChangeEvent } from "../lib/changes.ts";
 import { fetchWithTimeout } from "../lib/http.ts";
 import { log } from "../lib/logger.ts";
 import { requireAuth } from "../lib/auth.ts";
 import { rateLimit } from "../lib/rateLimit.ts";
 import { maskPhone } from "../lib/redact.ts";
+import { syncAssistants } from "../assistant/sync.ts";
 
 // Reject uploads larger than this (leads workbooks are small; this bounds abuse).
 const MAX_UPLOAD_BYTES = 15 * 1024 * 1024;
@@ -48,26 +58,245 @@ import { analyzeSystem } from "../ai/systemInsights.ts";
 
 export const outbound = new Hono();
 
-// CORS locked to the dashboard origin(s) (DASHBOARD_ORIGIN, comma-separated).
-// Empty = no cross-origin allowed (fail closed) — set it in production.
+// The dashboard is same-origin (served by this service). DASHBOARD_ORIGIN is
+// only for an extra cross-origin dashboard (comma-separated); empty = none.
 const allowedOrigins = env.dashboardOrigin
   ? env.dashboardOrigin.split(",").map((s) => s.trim()).filter(Boolean)
   : [];
 
 // Order matters: CORS first (so preflight gets headers + downstream lets OPTIONS
-// through), then rate limit (cheap, in front of the auth network call), then
-// auth on every /outbound/* request.
+// through), then rate limit (cheap, in front of the auth lookup), then auth on
+// every /outbound/* request.
 outbound.use(
   "/outbound/*",
   cors({
     origin: allowedOrigins,
-    allowHeaders: ["Authorization", "Content-Type"],
+    allowHeaders: ["Content-Type"],
     allowMethods: ["GET", "POST", "OPTIONS"],
-    credentials: false,
+    credentials: true,
   }),
 );
-outbound.use("/outbound/*", rateLimit({ windowMs: 60_000, max: 120 }));
+outbound.use("/outbound/*", rateLimit({ windowMs: 60_000, max: 240 }));
 outbound.use("/outbound/*", requireAuth);
+
+// --- Live stream (replaces Supabase Realtime) -------------------------------
+// One SSE connection per dashboard tab. Every successful write through db()
+// publishes a change event (src/lib/changes.ts); this forwards the ones the
+// dashboard cares about, trimmed to what it uses. Panels refetch through the
+// read endpoints below; LiveMonitor appends transcript lines straight from the
+// call_event rows. Heartbeats keep App Service's front end (idle timeout ~230s)
+// and the browser from dropping a quiet stream.
+
+const LIVE_TABLES = new Set(["campaign", "call", "call_event", "lead", "campaign_insight"]);
+const HEARTBEAT_MS = 25_000;
+
+interface LiveEvent {
+  t: string;
+  op: ChangeEvent["op"];
+  status?: string;
+  rows?: Array<{ call_id: unknown; vapi_call_id: unknown; type: unknown; role: unknown; text: string | null; at: string }>;
+}
+
+function toLiveEvent(e: ChangeEvent): LiveEvent | null {
+  if (e.schema !== env.outboundSchema || !LIVE_TABLES.has(e.table)) return null;
+  const event: LiveEvent = { t: e.table, op: e.op };
+  if (e.table === "call") {
+    const status = e.patch?.status ?? e.rows?.[0]?.status;
+    if (typeof status === "string") event.status = status;
+  }
+  if (e.table === "call_event" && e.rows) {
+    const at = new Date().toISOString();
+    event.rows = e.rows.map((r) => ({
+      call_id: r.call_id ?? null,
+      vapi_call_id: r.vapi_call_id ?? null,
+      type: r.type ?? null,
+      role: r.role ?? null,
+      text: typeof r.text === "string" ? r.text.slice(0, 2000) : null,
+      at,
+    }));
+  }
+  return event;
+}
+
+outbound.get("/outbound/events", (c) => {
+  c.header("X-Accel-Buffering", "no");
+  return streamSSE(c, async (stream) => {
+    let chain = Promise.resolve();
+    const send = (event: string, data: string) => {
+      chain = chain.then(() => (stream.aborted ? undefined : stream.writeSSE({ event, data }))).catch(() => {});
+    };
+    const off = onChange((e) => {
+      const live = toLiveEvent(e);
+      if (live) send("change", JSON.stringify(live));
+    });
+    stream.onAbort(off);
+    await stream.writeSSE({ event: "ready", data: "{}", retry: 5000 });
+    while (!stream.aborted) {
+      await stream.sleep(HEARTBEAT_MS);
+      chain = chain.then(() => (stream.aborted ? undefined : stream.write(": ping\n\n").then(() => undefined))).catch(() => {});
+      await chain;
+    }
+    off();
+  });
+});
+
+// --- Dashboard reads (these replace the browser's direct Supabase queries) ---
+
+const LIVE_STATUSES = ["queued", "ringing", "in-progress"];
+// A dead call can't be "live" longer than this (mirrors the stale sweeper).
+const ACTIVE_CUTOFF_MS = 15 * 60_000;
+// The call fields the dashboard renders (no raw/structured_data payloads).
+const CALL_LIST_COLUMNS = [
+  "id", "lead_id", "campaign_id", "vapi_call_id", "phone_number", "status", "outcome", "disposition",
+  "summary", "transcript", "duration_seconds", "recording_url", "ended_reason", "ended_by", "brand",
+  "started_at", "ended_at", "created_at",
+].join(", ");
+// The lead fields the Leads table renders (no raw workbook row).
+const LEAD_LIST_COLUMNS = [
+  "id", "campaign_id", "contact_name", "contact_title", "contact_phone", "contact_email", "dial_phone",
+  "building_name", "address", "city", "state", "region", "oem_match", "problem_type", "violation_codes",
+  "violation_count", "cert_expiry_date", "lead_score", "lead_tier", "servicing_brand", "disposition",
+  "attempts", "dnc", "notes", "decision_maker", "current_provider", "timeline", "callback_name",
+  "callback_phone", "callback_email", "qualified_at",
+].join(", ");
+
+type CallListRow = { id: string; campaign_id: string | null; lead_id: string | null } & Record<string, unknown>;
+
+/**
+ * Attach each call's campaign name and lead fields — what the dashboard's
+ * PostgREST embeds (`campaign:campaign_id(name), lead:lead_id(...)`) did.
+ * Two small id-list lookups, so it works on both data backends.
+ */
+async function withCallContext(calls: CallListRow[], leadFields: string[]) {
+  const unique = (ids: (string | null)[]) => [...new Set(ids.filter((v): v is string => Boolean(v)))];
+  const campaignIds = unique(calls.map((c) => c.campaign_id));
+  const leadIds = unique(calls.map((c) => c.lead_id));
+  const [campaigns, leads] = await Promise.all([
+    campaignIds.length ? db().from("campaign").select("id, name").in("id", campaignIds) : null,
+    leadIds.length ? db().from("lead").select(["id", ...leadFields].join(", ")).in("id", leadIds) : null,
+  ]);
+  const error = campaigns?.error || leads?.error;
+  if (error) throw new Error(error.message);
+  const campaignById = new Map(
+    ((campaigns?.data ?? []) as unknown as Array<{ id: string; name: string | null }>).map((r) => [r.id, r]),
+  );
+  const leadById = new Map(
+    ((leads?.data ?? []) as unknown as Array<Record<string, unknown> & { id: string }>).map((r) => [r.id, r]),
+  );
+  return calls.map((call) => {
+    const lead = call.lead_id ? leadById.get(call.lead_id) : undefined;
+    const campaign = call.campaign_id ? campaignById.get(call.campaign_id) : undefined;
+    return {
+      ...call,
+      campaign: campaign ? { name: campaign.name } : null,
+      lead: lead ? Object.fromEntries(leadFields.map((f) => [f, lead[f] ?? null])) : null,
+    };
+  });
+}
+
+outbound.get("/outbound/calls/active", async (c) => {
+  const cutoff = new Date(Date.now() - ACTIVE_CUTOFF_MS).toISOString();
+  const { data, error } = await db()
+    .from("call")
+    .select(CALL_LIST_COLUMNS)
+    .in("status", LIVE_STATUSES)
+    .gte("created_at", cutoff)
+    .order("created_at", { ascending: false });
+  if (error) return c.json({ error: error.message }, 500);
+  try {
+    const calls = await withCallContext((data ?? []) as unknown as CallListRow[], ["servicing_brand", "building_name"]);
+    return c.json({ calls });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+outbound.get("/outbound/calls/recent", async (c) => {
+  const limit = Math.min(200, Math.max(1, Number(c.req.query("limit")) || 60));
+  const { data, error } = await db()
+    .from("call")
+    .select(CALL_LIST_COLUMNS)
+    .eq("status", "ended")
+    .order("ended_at", { ascending: false })
+    .limit(limit);
+  if (error) return c.json({ error: error.message }, 500);
+  try {
+    const calls = await withCallContext((data ?? []) as unknown as CallListRow[], [
+      "servicing_brand",
+      "building_name",
+      "contact_name",
+    ]);
+    return c.json({ calls });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Running campaigns with this-run / active / qualified counts, from
+// v_campaign_live in one query (LiveCampaigns + the per-run budget counter).
+outbound.get("/outbound/campaigns/live", async (c) => {
+  const { data: camps, error } = await db()
+    .from("campaign")
+    .select("*")
+    .eq("status", "running")
+    .order("updated_at", { ascending: false });
+  if (error) return c.json({ error: error.message }, 500);
+  const running = (camps ?? []) as Array<{ id: string }>;
+  if (!running.length) return c.json({ campaigns: [] });
+  const { data: live, error: liveErr } = await db()
+    .from("v_campaign_live")
+    .select("campaign_id, dialed_this_run, active_calls, qualified")
+    .in("campaign_id", running.map((r) => r.id));
+  if (liveErr) return c.json({ error: liveErr.message }, 500);
+  const byId = new Map(
+    ((live ?? []) as Array<{ campaign_id: string; dialed_this_run: number; active_calls: number; qualified: number }>).map(
+      (r) => [r.campaign_id, r],
+    ),
+  );
+  return c.json({
+    campaigns: running.map((campaign) => ({
+      campaign,
+      dialedThisRun: byId.get(campaign.id)?.dialed_this_run ?? 0,
+      active: byId.get(campaign.id)?.active_calls ?? 0,
+      qualified: byId.get(campaign.id)?.qualified ?? 0,
+    })),
+  });
+});
+
+// One page of leads for the Leads table (the client pages through; the table
+// searches/filters client-side exactly as before).
+outbound.get("/outbound/leads", async (c) => {
+  const campaignId = c.req.query("campaignId");
+  const disposition = c.req.query("disposition");
+  const offset = Math.max(0, Number(c.req.query("offset")) || 0);
+  const limit = Math.min(1000, Math.max(1, Number(c.req.query("limit")) || 1000));
+  let q = db()
+    .from("lead")
+    .select(LEAD_LIST_COLUMNS)
+    .order("lead_score", { ascending: false })
+    .order("id")
+    .range(offset, offset + limit - 1);
+  if (campaignId) q = q.eq("campaign_id", campaignId);
+  if (disposition && disposition !== "all") q = q.eq("disposition", disposition);
+  const { data, error } = await q;
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ leads: data ?? [], offset, limit });
+});
+
+// Re-apply every Vapi assistant's config from code: inbound, generic outbound,
+// and one per brand (created if missing). This is also how the webhook URL is
+// re-pointed after a host move (SERVER_URL) — laptops can't reach the Azure
+// database the brand assistant ids live in, so it runs server-side.
+outbound.post("/outbound/admin/assistants/sync", async (c) => {
+  const body = await c.req.json<{ brand?: string }>().catch(() => ({}) as { brand?: string });
+  const result = await syncAssistants({ onlyBrand: body.brand?.trim() || undefined });
+  log.info("Assistant sync requested", {
+    by: c.get("user").email,
+    ok: result.ok,
+    items: result.items.map((i) => `${i.target}:${i.action}`),
+  });
+  return c.json(result, result.ok ? 200 : 500);
+});
 
 outbound.get("/outbound/campaigns", async (c) => {
   const { data, error } = await db().from("campaign").select("*").order("created_at", { ascending: false });
@@ -348,8 +577,9 @@ outbound.get("/outbound/campaign/:id/window-status", async (c) => {
 // Blocked if the compliance guardrail failed.
 outbound.post("/outbound/insights/:id/approve", async (c) => {
   const id = c.req.param("id");
-  const body = await c.req.json<{ approvedBy?: string }>().catch(() => ({}) as { approvedBy?: string });
-  const result = await applyInsight(id, body.approvedBy);
+  // Attribute the approval to the signed-in operator (the audit trail), not to
+  // whatever the request body claims.
+  const result = await applyInsight(id, c.get("user").email);
   log.info("Insight approve requested", { insightId: id, ok: result.ok, blocked: result.blocked });
   return c.json(result, result.ok ? 200 : 400);
 });

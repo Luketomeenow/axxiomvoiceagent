@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 import ErrorChip from "./ErrorChip";
 
@@ -23,24 +23,12 @@ export function StatsBar({ refreshKey, campaignId }: { refreshKey: number; campa
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [total, setTotal] = useState(0);
 
-  // Aggregate view instead of one row per lead: the raw select was unbounded
-  // AND silently capped at PostgREST's 1000-row default, so totals were wrong
-  // past 1000 leads. The view returns at most campaigns × dispositions rows.
+  // GET /outbound/stats reads the v_lead_disposition_counts aggregate view (at
+  // most campaigns × dispositions rows) instead of one row per lead.
   const load = useCallback(async () => {
-    let q = supabase.from("v_lead_disposition_counts").select("disposition, leads");
-    if (campaignId) q = q.eq("campaign_id", campaignId);
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
-    const c: Record<string, number> = {};
-    let sum = 0;
-    for (const r of (data as { disposition: string | null; leads: number }[]) ?? []) {
-      const d = r.disposition || "new";
-      const n = Number(r.leads) || 0;
-      c[d] = (c[d] ?? 0) + n;
-      sum += n;
-    }
-    setCounts(c);
-    setTotal(sum);
+    const { counts: c, total: sum } = await api.stats(campaignId);
+    setCounts(c ?? {});
+    setTotal(sum ?? 0);
   }, [campaignId]);
 
   const { loadNow, error } = useDebouncedLoader(load);

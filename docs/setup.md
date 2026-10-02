@@ -2,8 +2,9 @@
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh) 1.1+** runs the HTTP server. The CLI scripts also have Node fallbacks (via `tsx`) if you don't have Bun.
-- A **Supabase** project (Postgres + Realtime + **Auth** — dashboard users are provisioned invite-only).
+- **[Bun](https://bun.sh) 1.1+** for local dev (`bun run dev`, `bun test`). Production runs the bundled server on **Node 22** (Azure App Service); the CLI scripts also have Node fallbacks (via `tsx`).
+- **Azure**: the App Service, managed identity, Key Vault and Postgres access described in [azure.md](azure.md) (Zach provisions; one-time).
+- For local dev, **PostgreSQL 18** (`brew install postgresql@18`) — the same major as Azure; `bun test` uses it too.
 - A **Vapi** account, with your **ElevenLabs** key added in Vapi → Provider Keys (only needed for ElevenLabs-voiced assistants).
 - A **Twilio** account — your own DIDs are imported into Vapi as per-brand caller IDs, and Twilio is the authoritative source for telephony cost/status.
 - A **GoHighLevel** (LeadConnector v2) account — for the inbound CRM flow.
@@ -14,7 +15,9 @@
 bun install
 cp .env.example .env        # fill in keys (see "Environment" below)
 bun run dev                 # server on http://localhost:3000 (watch mode)
-bun run typecheck           # tsc --noEmit — the static gate (no tests/linter)
+bun run typecheck           # tsc --noEmit — the static gate
+bun test                    # data-layer contract tests (throwaway local Postgres)
+npm run build && npm run start:node   # the exact production bundle, under Node
 ```
 
 Expose the local server so Vapi can reach it during testing (e.g. `ngrok http 3000`) and set `SERVER_URL` to that public URL.
@@ -23,7 +26,7 @@ Expose the local server so Vapi can reach it during testing (e.g. `ngrok http 30
 
 ### No Bun? Node fallbacks
 
-The HTTP server needs Bun, but the seed/admin scripts can run under Node + `tsx`:
+`npm run build && npm run start:node` runs the server under Node; the seed/admin scripts run under Node + `tsx`:
 
 ```bash
 npm install
@@ -35,43 +38,40 @@ npm run create-assistant:node
 
 ## Environment
 
-All config is read through `src/config/env.ts`. **The server boots even with missing keys** (so Railway's health check passes on first deploy); each feature logs a warning and the `assert*()` helpers throw a clear error only when an unconfigured feature is actually used. See `.env.example` for the annotated list. Key groups:
+All config is read through `src/config/env.ts`. **The server boots even with missing keys** (so the App Service health check passes on first deploy); each feature logs a warning and the `assert*()` helpers throw a clear error only when an unconfigured feature is actually used. See `.env.example` for the annotated list. Key groups:
 
 | Group | Vars |
 |-------|------|
-| Server | `PORT`, `SERVER_URL` |
+| Server | `PORT`, `SERVER_URL` (the public URL — Vapi webhook target) |
+| Database | `DATA_BACKEND` (`azure` \| `supabase`; unset = azure when `AZURE_PG_USER` is set), `AZURE_PG_HOST`, `AZURE_PG_PORT`, `AZURE_PG_DATABASE`, `AZURE_PG_USER`, `AZURE_PG_CLIENT_ID` (App Service), `AZURE_PG_PASSWORD` + `AZURE_PG_SSL=disable` (local Postgres only), `AZURE_PG_POOL_MAX` |
+| Dialer gate | `DIALER_ENABLED` (default `true`; `false` on any instance that must not place calls) |
 | Vapi | `VAPI_API_KEY`, `VAPI_ASSISTANT_ID`, `VAPI_PHONE_NUMBER_ID`, `VAPI_SERVER_SECRET` (**required** — webhook fails closed without it), `ALLOW_INSECURE_WEBHOOK` (local dev only) |
 | Twilio | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` — caller-ID import script + per-call cost/status sync |
 | Outbound dialing | `OUTBOUND_ASSISTANT_ID` (fallback assistant), `OUTBOUND_TIMEZONE`, `CALL_WINDOW_START`/`END` (8–21), `MAX_CONCURRENT_CALLS`, `MAX_CALL_ATTEMPTS`, `RETRY_BACKOFF_MINUTES`, `MAX_CALLS_PER_NUMBER_PER_DAY`, `ENABLE_VOICEMAIL_DETECTION` (set `true` for live campaigns) |
 | Data lifecycle | `PII_RETAIN_DAYS` (retention purge default), `INSIGHT_EVERY_N_CALLS` (auto campaign-analysis cadence) |
-| Dashboard API auth | `SUPABASE_ANON_KEY` (validates dashboard user JWTs), `DASHBOARD_ORIGIN` (CORS allow-list, comma-separated; empty = no cross-origin) |
+| Dashboard auth | `DASHBOARD_SESSION_SECRET` (**required**, ≥ 32 chars — signs the session cookie; auth fails closed without it), `DASHBOARD_SESSION_HOURS` (default 12), `DASHBOARD_DIR` (the built dashboard; default `public`), `DASHBOARD_ORIGIN` (extra cross-origin dashboards — normally empty) |
 | GoHighLevel | `GHL_ACCESS_TOKEN`, `GHL_LOCATION_ID`, `GHL_CALENDAR_ID`, `GHL_PIPELINE_ID`, `GHL_PIPELINE_STAGE_ID`, `GHL_TIMEZONE` |
 | Transfer / safety | `TRANSFER_PHONE_NUMBER`, `EMERGENCY_INSTRUCTION` |
 | Voice + LLM | `ELEVENLABS_VOICE_ID`, `ANTHROPIC_API_KEY` (insights + transcript analysis), `ANTHROPIC_MODEL` (default `claude-sonnet-4-6`), `ENABLE_TRANSCRIPT_ANALYSIS` |
 | ElevenLabs (optional) | `ELEVENLABS_API_KEY` (dashboard voice list + Convai POC), `ELEVENLABS_AGENT_ID` (the Convai POC agent) — see [voices.md](voices.md) |
-| Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `VOICE_CALL_TABLE` |
+| Legacy Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` (only with `DATA_BACKEND=supabase`, transition only), `VOICE_CALL_TABLE` |
 | Business (prompt) | `COMPANY_NAME`, `AGENT_NAME`, `SERVICE_AREA`, `BUSINESS_HOURS`, `BOOKING_TYPE` |
 
 > **Per-brand agents** (Twilio caller IDs, voices, compliance posture) are configured in code (`src/assistant/brands.ts`), not env. See [brands.md](brands.md).
 
-> **Secrets & PII:** `.env*` and the `data/` folder (lead workbooks, code lists) are gitignored **and** dockerignored. Never commit them.
+> **Secrets & PII:** `.env*` and the `data/` folder (lead workbooks, code lists) are gitignored and never part of the deploy package. Never commit them. In Azure, secrets live in Key Vault (see [azure.md](azure.md)).
 
-## Supabase setup
+## Database setup
 
-Run the DDL in the Supabase SQL editor — **both files, top to bottom, and re-run them after every pull** (they're idempotent/additive; newer features live in later blocks):
+Production is **Azure Database for PostgreSQL** (`psql-axxiom-marketing` / `axxiom_hub`) — see [azure.md](azure.md). Apply the schema from **Azure Cloud Shell** (laptops can't reach the server) and **re-run it after every pull that changes it** (idempotent):
 
-1. `scripts/sql/ax_voice_call.sql` — the inbound call log table (+ RLS: service-role-only).
-2. `scripts/sql/outbound_schema.sql` — the entire `outbound` schema: campaigns, leads, calls, events, DNC, code reference, `failed_op` dead-letter, `campaign_insight`, the analytics `v_*` views, and the security-hardening RLS block.
+- `scripts/azure/sql/voice_schema.sql` — everything: the `outbound` schema (campaigns, leads, calls, events, DNC, code reference, `failed_op` dead-letter, `campaign_insight`, `dashboard_user`, the analytics `v_*` views) + `public.ax_voice_call`, and the grants for the app's managed identity (read/write) and the hub's (read-only).
 
-Then, in the Supabase dashboard:
+Access posture: only this service connects to the database (the dashboard reads through the API), so there is no RLS/anon layer — plain GRANTs to the app's Postgres role; `dashboard_user` (password hashes) is never granted to the hub's reader role.
 
-- **Settings → API → Exposed schemas:** add `outbound`. *(If missed, `/ready` returns 503 and every DNC lookup fails closed — the dialer treats every number as suppressed and dials nothing.)*
-- **Database → Replication:** enable Realtime for the `outbound` schema (live monitor + live campaign cards).
-- **Auth → Users:** **invite your dashboard users** (invite-only — there is no public signup). The dashboard has a login page; every read runs as that authenticated user.
+Sanity checks: the deployed app's **`GET /ready`** (database reachable, `outbound` schema readable, and `connectedAs` = the managed identity), or `bun run check-db` from Cloud Shell / against a local Postgres.
 
-**RLS posture (already in the SQL):** all reads require the `authenticated` role — `anon` select is revoked on tables and views, views run with `security_invoker`, and `ax_voice_call` is service-role-only. All writes go through the backend with the service-role key. There is no anon access to lead PII.
-
-Sanity check from your machine: `bun run check-db` verifies the service role can reach the `outbound` schema and prints campaign/lead/DNC counts.
+> Legacy: `scripts/sql/ax_voice_call.sql` + `scripts/sql/outbound_schema.sql` are the Supabase DDL (RLS, Realtime publication). They're only needed while something still runs with `DATA_BACKEND=supabase`.
 
 ## Twilio caller IDs
 
@@ -86,6 +86,8 @@ The script registers each DID in Vapi (idempotent — matches existing numbers b
 
 ## Wire up Vapi
 
+> **On Azure, use the dashboard:** Agent studio → **Re-sync Vapi assistants** (`POST /outbound/admin/assistants/sync`) runs steps 2–4 server-side — it PATCHes the inbound + generic outbound assistants, creates/updates every brand assistant (ids in `app_setting`), keeps approved prompt overrides, and points every webhook at `SERVER_URL`. The scripts below still work against a local database or from Cloud Shell, and are how an env-referenced assistant (`VAPI_ASSISTANT_ID`, `OUTBOUND_ASSISTANT_ID`) is created the first time.
+
 1. Add your ElevenLabs key in Vapi → Provider Keys (only needed for ElevenLabs-voiced assistants — the brand + inbound agents use Vapi-native voices).
 2. `bun run create-assistant` → creates the **inbound** assistant, prints `VAPI_ASSISTANT_ID` (put it in `.env`). Set `VAPI_PHONE_NUMBER_ID` and re-run to attach the number.
 3. `bun run create-outbound-assistant` → creates the generic/fallback **outbound** assistant, prints `OUTBOUND_ASSISTANT_ID` (put it in `.env`).
@@ -93,52 +95,38 @@ The script registers each DID in Vapi (idempotent — matches existing numbers b
 5. (Optional) `bun run create-convai-agent` → the ElevenLabs Conversational AI **evaluation POC**. See [voices.md](voices.md).
 6. Point your inbound / CallRail tracking number at the inbound Vapi number.
 
-> **Re-run the `create-*` scripts whenever you pull changes** to prompts or tools (`src/assistant/**`) — e.g. the `confirmConsent` tool only reaches an assistant when its config is re-pushed. They PATCH the existing assistant when its id is known, otherwise POST a new one. Approved prompt overrides (`brand_prompt:<slug>` in `app_setting`) are preserved.
+> **Re-sync whenever you deploy changes** to prompts or tools (`src/assistant/**`) — e.g. the `confirmConsent` tool only reaches an assistant when its config is re-pushed. Existing assistants are PATCHed, missing brand assistants created. Approved prompt overrides (`brand_prompt:<slug>`, and `brand_prompt:default` for the generic outbound assistant) are preserved.
 
 ### Other scripts
 
-- `bun run import-leads <file.xlsx> --region "…" [--campaign "…"]` — import a region's leads (one campaign per region; auto-assigns the campaign's brand from the leads).
+- `bun run dashboard-user add|reset|disable|enable|list <email> [--sql]` — dashboard logins (invite-only; `--sql` prints SQL for Cloud Shell). See [azure.md](azure.md#dashboard-accounts).
+- Lead import: the dashboard's **Leads → Import** (same code as the CLI). `bun run import-leads <file.xlsx> --region "…" [--campaign "…"]` works where the database is reachable.
 - `bun run import-codes [scripts/seed/ca_elevator_compliance.csv]` — seed the violation-code knowledge base.
-- `bun run check-db` — outbound-schema reachability diagnostic.
+- `bun run check-db` — database reachability diagnostic (backend, identity, row counts, a DNC lookup).
 
-## Deploy (Railway)
+## Deploy (Azure App Service)
 
-The repo ships a `Dockerfile` (Bun base image) and `railway.json`:
+Full detail — resources, identity, Key Vault, the cutover runbook and troubleshooting — is in **[azure.md](azure.md)**. In short:
 
-1. Push the repo; Railway builds the Dockerfile and runs `bun run src/index.ts` with health check `/health`.
-2. Set all env vars in Railway, including `SERVER_URL` = your Railway URL. **Required for production:** `VAPI_SERVER_SECRET` (webhook is 503 without it), `SUPABASE_ANON_KEY` + `DASHBOARD_ORIGIN` (dashboard API auth/CORS), `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN` (cost sync), `ANTHROPIC_API_KEY` (insights), `ENABLE_VOICEMAIL_DETECTION=true` for live campaigns.
-3. The create scripts read `SERVER_URL` to set each assistant's webhook to `${SERVER_URL}/vapi/webhook`.
-4. Use `/ready` (not just `/health`) to verify a deploy: it checks Supabase connectivity **and** that the `outbound` schema is exposed.
-5. **Run exactly one instance.** The campaign worker, rate limiter, anti-loop tool history, and disclosure tracking are in-memory — a second replica would double-dial.
+1. `./scripts/azure/sync-app-settings.sh --apply` — secrets → Key Vault references (loaded from `.env` if missing), config → app settings, plus `DATA_BACKEND=azure`, the managed identity, `SERVER_URL`, startup command, Always-On, health check. `DIALER_ENABLED` defaults to `false` on first setup and is never changed by the script.
+2. Commit, then `./scripts/azure/package-app.sh --deploy` — one zip: the bundled backend (`dist/server.mjs`), the dashboard export (`public/`), a `VERSION` file. Nothing installs server-side.
+3. Verify with **`/health`** (`version` = your commit) and **`/ready`** (`connectedAs` = the app identity, `outbound` schema readable).
+4. Agent studio → **Re-sync Vapi assistants** when prompts/tools changed.
+5. **Run exactly one instance.** The campaign worker, rate limiter, anti-loop tool history, disclosure tracking and the live-update bus are in-memory — a second instance would double-dial.
 
-**Post-pull checklist:** re-run both SQL files → re-run `create-outbound-assistant` + `create-brand-assistants` → confirm the env vars above → provision dashboard users in Supabase Auth.
-
-Graceful shutdown is handled (SIGTERM stops the worker before exit), and the worker auto-resumes on boot if any campaign is still `running`.
+Graceful shutdown is handled (SIGTERM stops the worker, then closes the database pool), and the worker auto-resumes on boot if any campaign is still `running` (unless `DIALER_ENABLED=false`).
 
 ## Dashboard (web/)
 
+The dashboard is a Next.js 14 app exported as **static files** and served by the backend itself (same origin — the session cookie and the live stream need that; there is no separate dashboard host).
+
 ```bash
 cd web
-cp .env.local.example .env.local   # NEXT_PUBLIC_SUPABASE_URL, anon key, NEXT_PUBLIC_API_BASE
 npm install
-npm run dev                        # serves on :3001; backend runs on :3000
+npm run dev        # :3001 — proxies /outbound + /auth to the backend on :3000 (API_DEV_ORIGIN to change)
+npm run build      # static export → web/out (package-app.sh ships it as public/)
 ```
 
-| Var | Meaning |
-|-----|---------|
-| `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | anon key — used only to establish the user session; all data reads run as the **logged-in** user |
-| `NEXT_PUBLIC_API_BASE` | Backend base URL (default `http://localhost:3000`; in prod, the Railway URL) |
+No `NEXT_PUBLIC_*` variables anymore — the old `NEXT_PUBLIC_SUPABASE_*` / `NEXT_PUBLIC_API_BASE` in a local `web/.env.local` are ignored and can be deleted.
 
-The dashboard is **login-gated**: `/login` signs in against Supabase Auth (invite-only), an `AuthGuard` wraps every page, and `web/lib/api.ts` forwards the user's JWT as `Authorization: Bearer` on every backend call (exports download via an authenticated fetch, since a plain link can't carry the header).
-
-### Deploy the dashboard (Netlify)
-
-The dashboard deploys to **Netlify**; the **backend stays on Railway** (Netlify can't host the persistent Bun webhook + dialer worker). Config lives in `netlify.toml` (root): `base = "web"`, `npm run build`, Node 20, and the official `@netlify/plugin-nextjs` runtime.
-
-1. Netlify → **Add new site → Import from Git**, pick this repo. `netlify.toml` already points the build at `web/` — no manual build settings needed.
-2. **Site settings → Environment variables** — add the three `NEXT_PUBLIC_*` vars above. Set **`NEXT_PUBLIC_API_BASE` to your Railway backend URL** (not localhost).
-3. On the **backend**, set `DASHBOARD_ORIGIN` to the Netlify site URL — CORS is fail-closed, so an unset/mismatched origin blocks every dashboard API call.
-4. Deploy, then log in with an invited Supabase Auth user.
-
-> These are `NEXT_PUBLIC_*` (inlined at build time) — after changing any of them in Netlify, trigger a **redeploy**. If they're unset the dashboard silently points at `localhost` and login/Realtime/API all break.
+The dashboard is **login-gated**: `/login` signs in against the backend (`POST /auth/login`, invite-only accounts), the backend sets an httpOnly session cookie, an `AuthGuard` wraps every page, and every API call and the SSE stream (`GET /outbound/events`) carry the cookie automatically.

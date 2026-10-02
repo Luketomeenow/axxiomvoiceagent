@@ -38,7 +38,7 @@ async function main() {
 
   if (!env.serverUrl) {
     console.warn("⚠️  SERVER_URL is not set — the assistant will be created WITHOUT a webhook URL.");
-    console.warn("    Set SERVER_URL to your Railway URL and re-run to wire up tools + logging.\n");
+    console.warn("    Set SERVER_URL to this service's public URL (App Service) and re-run to wire up tools + logging.\n");
   }
 
   const config = buildAssistantConfig();

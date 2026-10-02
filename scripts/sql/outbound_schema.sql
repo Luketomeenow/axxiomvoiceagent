@@ -632,3 +632,29 @@ grant select on outbound.v_lead_disposition_counts, outbound.v_lead_brand_counts
                outbound.v_campaign_live to authenticated, service_role;
 revoke select on outbound.v_lead_disposition_counts, outbound.v_lead_brand_counts,
                outbound.v_campaign_live from anon;
+
+-- ===========================================================================
+-- DASHBOARD LOGINS (additive, safe to re-run) — the dashboard no longer uses
+-- Supabase Auth: operators sign in against outbound.dashboard_user (scrypt
+-- hashes, src/lib/passwords.ts) and the backend issues its own session cookie.
+-- Needed here only while the backend still runs with DATA_BACKEND=supabase;
+-- the Azure schema (scripts/azure/sql/voice_schema.sql) has the same table.
+-- Password hashes: RLS on with NO policy + no grants, so ONLY the service role
+-- (the backend) can read them — the default privileges above would otherwise
+-- give every `authenticated` Supabase user SELECT.
+-- ===========================================================================
+create table if not exists outbound.dashboard_user (
+  id               uuid primary key default gen_random_uuid(),
+  email            text not null unique check (email = lower(email)),
+  name             text,
+  password_hash    text not null,
+  role             text not null default 'operator',   -- operator | admin
+  disabled         boolean not null default false,
+  session_version  int  not null default 1,            -- bump to sign out every session
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  last_login_at    timestamptz
+);
+alter table outbound.dashboard_user enable row level security;
+revoke all on outbound.dashboard_user from anon, authenticated;
+grant all privileges on outbound.dashboard_user to service_role;

@@ -1,40 +1,29 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { api } from "@/lib/api";
+import { useLiveChanges } from "@/lib/live";
 import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 
 /**
- * Compact header indicator: how many calls are live right now, refreshed via
- * Supabase Realtime. Doubles as a quick "is the dashboard connected?" signal —
+ * Compact header indicator: how many calls are live right now, refreshed from
+ * the live change stream. Doubles as a quick "is the dashboard connected?" signal —
  * a failed refresh shows "offline?" instead of masquerading as "Idle".
  */
 export function LiveStatus() {
   const [active, setActive] = useState(0);
 
+  // Calls in flight in the last 15 minutes (the server applies the cutoff).
   const load = useCallback(async () => {
-    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const { count, error } = await supabase
-      .from("call")
-      .select("id", { count: "exact", head: true })
-      .in("status", ["queued", "ringing", "in-progress"])
-      .gte("created_at", cutoff);
-    if (error) throw new Error(error.message);
-    setActive(count ?? 0);
+    setActive((await api.activeCalls()).length);
   }, []);
 
   const { trigger, loadNow, error } = useDebouncedLoader(load);
 
   useEffect(() => {
     void loadNow();
-    const ch = supabase
-      .channel("live-status")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, trigger)
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [loadNow, trigger]);
+  }, [loadNow]);
+  useLiveChanges(["call"], trigger);
 
   const live = active > 0;
 

@@ -1,24 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { api, type CallWithContext } from "@/lib/api";
+import { useLiveChanges } from "@/lib/live";
 import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
-import type { Call } from "@/lib/types";
 import ErrorChip from "./ErrorChip";
 import { TranscriptViewer } from "./TranscriptViewer";
 
 const PAGE_SIZE = 8;
 
-// Call rows joined with their campaign name + lead brand (PostgREST embeds).
-type RecentCall = Call & {
-  campaign?: { name: string | null } | null;
-  lead?: { servicing_brand: string | null; building_name: string | null; contact_name: string | null } | null;
-};
+// Call rows joined with their campaign name + lead brand (GET /outbound/calls/recent).
+type RecentCall = CallWithContext;
 
 /**
  * Recently finished calls — recording, AI summary, and a compact paginated
  * transcript. Each call shows which campaign + brand it belongs to. Refreshes
- * live via Supabase Realtime; the list itself paginates client-side.
+ * from the live change stream; the list itself paginates client-side.
  */
 export function RecentCalls() {
   const [calls, setCalls] = useState<RecentCall[]>([]);
@@ -26,35 +23,21 @@ export function RecentCalls() {
   const [page, setPage] = useState(0);
 
   const load = useCallback(async () => {
-    const { data, error } = await supabase
-      .from("call")
-      .select("*, campaign:campaign_id(name), lead:lead_id(servicing_brand,building_name,contact_name)")
-      .eq("status", "ended")
-      .order("ended_at", { ascending: false })
-      .limit(60);
-    if (error) throw new Error(error.message);
-    setCalls((data as RecentCall[]) ?? []);
+    setCalls(await api.recentCalls(60));
   }, []);
 
   const { trigger, loadNow, error } = useDebouncedLoader(load);
 
   useEffect(() => {
     void loadNow();
-    const ch = supabase
-      .channel("recent-calls")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, (payload) => {
-        // The list only shows ENDED calls — skip the constant status churn of
-        // in-flight calls (queued → ringing → in-progress) and refetch only
-        // when a call could have entered the list.
-        const next = payload.new as { status?: string } | null;
-        if (payload.eventType === "UPDATE" && next?.status && next.status !== "ended") return;
-        trigger();
-      })
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
-  }, [loadNow, trigger]);
+  }, [loadNow]);
+  useLiveChanges(["call"], (change) => {
+    // The list only shows ENDED calls — skip the constant status churn of
+    // in-flight calls (queued → ringing → in-progress) and refetch only when a
+    // call could have entered the list.
+    if (change.op === "UPDATE" && change.status && change.status !== "ended") return;
+    trigger();
+  });
 
   const fmtDuration = (s: number | null) => {
     if (!s) return "—";

@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
 import { api, type BrandInfoOption, type WindowStatus } from "@/lib/api";
+import { useLiveChanges } from "@/lib/live";
 import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
 import type { Campaign } from "@/lib/types";
 import ErrorChip from "./ErrorChip";
@@ -36,9 +36,7 @@ export function CampaignControls({
   const [preflight, setPreflight] = useState<WindowStatus | null>(null);
 
   const loadCampaigns = useCallback(async () => {
-    const { data, error } = await supabase.from("campaign").select("*").order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
-    const list = (data as Campaign[]) ?? [];
+    const list: Campaign[] = await api.campaigns();
     setCampaigns(list);
     // Default to the most recent campaign (one campaign per region).
     if (!campaignId && list.length) onSelect(list[0].id);
@@ -65,15 +63,9 @@ export function CampaignControls({
   useEffect(() => {
     api.brandList().then(setBrands).catch(() => {});
     void loadNow();
-    const ch = supabase
-      .channel("campaign-changes")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "campaign" }, trigger)
-      .subscribe();
-    return () => {
-      supabase.removeChannel(ch);
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useLiveChanges(["campaign"], trigger);
 
   const campaign = campaigns.find((c) => c.id === campaignId) ?? null;
 
@@ -82,8 +74,9 @@ export function CampaignControls({
     if (campaign) setConcurrency(String(campaign.max_concurrent ?? 1));
   }, [campaign?.id, campaign?.max_concurrent]);
 
-  // Live "dialed this run" counter: call rows created since run_started_at.
-  // Polls while the campaign is running so the operator sees the batch fill up.
+  // Live "dialed this run" counter: call rows created since run_started_at
+  // (v_campaign_live via GET /outbound/campaigns/live). Polls while the
+  // campaign is running so the operator sees the batch fill up.
   useEffect(() => {
     let cancelled = false;
     async function fetchPlaced() {
@@ -91,13 +84,14 @@ export function CampaignControls({
         if (!cancelled) setPlacedThisRun(0);
         return;
       }
-      const { count, error } = await supabase
-        .from("call")
-        .select("id", { count: "exact", head: true })
-        .eq("campaign_id", campaign.id)
-        .gte("created_at", campaign.run_started_at);
-      if (error) return; // transient — keep the last value, next poll retries
-      if (!cancelled) setPlacedThisRun(count ?? 0);
+      let live;
+      try {
+        live = await api.campaignsLive();
+      } catch {
+        return; // transient — keep the last value, next poll retries
+      }
+      const row = live.find((r) => r.campaign.id === campaign.id);
+      if (!cancelled) setPlacedThisRun(row?.dialedThisRun ?? 0);
     }
     fetchPlaced();
     const t = campaign?.status === "running" ? setInterval(fetchPlaced, 5000) : undefined;

@@ -7,8 +7,9 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 | Surface | Auth |
 |---------|------|
 | `/health`, `/ready` | Public. |
+| `/auth/login` | Public; rate-limited (10 attempts / 5 min per client IP across the credential endpoints). Same-origin only. |
 | `POST /vapi/webhook` | `x-vapi-secret` header, compared constant-time against `VAPI_SERVER_SECRET`. **Fails closed**: 503 if the secret is unset (unless `ALLOW_INSECURE_WEBHOOK=true`, local dev only), 401 on mismatch. |
-| `/outbound/*` (everything below) | **Supabase user JWT** — `Authorization: Bearer <access_token>`, validated via `auth.getUser` (`requireAuth` in `src/lib/auth.ts`). 401 without a valid token; 503 if the server lacks `SUPABASE_URL`/`SUPABASE_ANON_KEY`. Plus: **CORS** locked to `DASHBOARD_ORIGIN` (fail-closed) and a **rate limit** of 120 requests/min per client IP. The dashboard forwards the JWT automatically (`web/lib/api.ts`). |
+| `/outbound/*` (everything below), `/auth/me`, `/auth/password` | **Session cookie** (`axv_session`: HMAC-signed, httpOnly, SameSite=Lax, 12 h sliding) for an invite-only `outbound.dashboard_user` account (`requireAuth` in `src/lib/auth.ts`). 401 without a valid session (or once the account is disabled / its password changed); 503 if `DASHBOARD_SESSION_SECRET` is unset or shorter than 32 chars. State-changing requests from another origin get 403. Plus a **rate limit** of 240 requests/min per client IP. The dashboard is served by the same service, so the browser sends the cookie automatically. |
 
 ## HTTP endpoints
 
@@ -16,8 +17,8 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/health` | Dependency-free liveness (Railway health check) → `{ ok: true }`. |
-| `GET` | `/ready` | Readiness: verifies Supabase is reachable **and** the `outbound` schema is exposed (`checks.outboundSchema`). 503 when not. |
+| `GET` | `/health` | Dependency-free liveness (App Service health check) → `{ ok: true, version }` (`version` = the deployed git sha). |
+| `GET` | `/ready` | Readiness: verifies the database is reachable **and** the `outbound` schema is readable (`checks.outboundSchema`); on Azure also reports `connectedAs` (the managed identity), `database`, `serverVersion`, plus `dataBackend` and `dialerEnabled`. 503 when not. |
 | `POST` | `/vapi/webhook` | All Vapi server messages (tool-calls, status, transcript, end-of-call) for **both** agents. Routed outbound vs. inbound via `isOutboundCall(message)`. Handler errors return 200 `{ok:false}` so Vapi doesn't retry-storm. |
 
 ### Campaigns & dialing (`src/outbound/routes.ts`)

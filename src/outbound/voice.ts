@@ -45,6 +45,12 @@ export async function getVapiVoiceId(): Promise<string> {
   return (await readSetting(VOICE_KEY.vapi)) || env.elevenLabsVoiceId || "burt";
 }
 
+/** Same, but a failed lookup throws (the assistant sync must not fall back silently). */
+export async function getVapiVoiceIdStrict(): Promise<string> {
+  const { readAppSettingStrict } = await import("./brandStore.ts");
+  return (await readAppSettingStrict(VOICE_KEY.vapi)) || env.elevenLabsVoiceId || "burt";
+}
+
 /** Current ElevenLabs agent voice (persisted, else env). Used by create-convai-agent. */
 export async function getElevenLabsAgentVoiceId(): Promise<string> {
   return (await readSetting(VOICE_KEY.elevenlabs)) || env.elevenLabsVoiceId || "";

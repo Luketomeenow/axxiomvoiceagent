@@ -1,6 +1,6 @@
 # Outbound Campaigns
 
-A compliant outbound calling system that dials elevator-violation leads **region by region**, discloses + captures consent, qualifies whether they want the brand's help, looks up violation **codes** accurately, dispositions each lead into **sales-ready** data — and is monitored, measured, and **continuously improved** from the dashboard. Everything lives in a dedicated Supabase **`outbound` schema** (separate from the inbound `ax_voice_call`).
+A compliant outbound calling system that dials elevator-violation leads **region by region**, discloses + captures consent, qualifies whether they want the brand's help, looks up violation **codes** accurately, dispositions each lead into **sales-ready** data — and is monitored, measured, and **continuously improved** from the dashboard. Everything lives in a dedicated **`outbound` schema** in Azure Postgres (separate from the inbound `ax_voice_call`).
 
 ```
 Leads xlsx ──import (CLI or dashboard upload)──▶ outbound.lead ──auto-assign──▶ campaign.brand
@@ -11,7 +11,7 @@ Worker (15s tick) / "call now" / test call ──▶ Vapi ──status/transcrip
         │                                     outbound.call + call_event + lead disposition + sales fields
         ├── every ~5 min: Twilio cost/status sync            │
         └── every N ended calls: AI campaign insight         ▼
-Dashboard (login-gated) ◀── Supabase Realtime + authenticated API ── console + /analytics
+Dashboard (login-gated) ◀── live SSE stream + authenticated API ── console + /analytics
 ```
 
 The shared outbound assistant logic is defined in `src/assistant/outbound/` (qualification prompt, deterministic disclosure opener, tools); each **brand** gets its own Vapi assistant + Twilio caller ID ([brands.md](brands.md)). The dialer, webhook handlers, and HTTP API live in `src/outbound/`.
@@ -142,8 +142,8 @@ If a call ends without the agent setting a disposition, the handler infers one f
 
 The console (login required) is built for running several campaigns at once:
 
-- **Live campaigns** — one card per `running` campaign: dialed-this-run vs. budget, active calls, qualified count (Realtime + polling).
-- **Live monitor** — in-flight calls with streaming transcripts (Realtime on `call` + `call_event`); an **End call** button drops a stuck/bad call via the per-call control URL (`ended_by='operator'`). If Vapi's control URL times out or rejects (the call usually already ended on Vapi's side), the row is **still marked ended** so the monitor clears — a late end-of-call webhook overwrites it with the real outcome if the call was somehow live.
+- **Live campaigns** — one card per `running` campaign: dialed-this-run vs. budget, active calls, qualified count (live stream + a 30 s safety poll).
+- **Live monitor** — in-flight calls with streaming transcripts (the live SSE stream carries each `call_event` row as it is written); an **End call** button drops a stuck/bad call via the per-call control URL (`ended_by='operator'`). If Vapi's control URL times out or rejects (the call usually already ended on Vapi's side), the row is **still marked ended** so the monitor clears — a late end-of-call webhook overwrites it with the real outcome if the call was somehow live.
 - **Recent calls** — recording, summary, paginated transcript, `ended_by` badge.
 - **Campaign controls** — start/pause with **Calls this run** + concurrency, rename/re-region, and the optional **Brand agent + caller ID** override ("Auto" = resolve from leads).
 - **Stats bar / leads table / export** — disposition breakdown, filter/search + per-lead "call now", CSV/XLSX export presets.

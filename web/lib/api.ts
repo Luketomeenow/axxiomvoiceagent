@@ -1,18 +1,19 @@
-import { API_BASE, getAccessToken, supabase } from "./supabase";
+import type { Call, Campaign, Lead } from "./types";
 
-/** Merge the signed-in user's JWT into request headers (Authorization: Bearer). */
-async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
-  const token = await getAccessToken();
-  return token ? { ...base, Authorization: `Bearer ${token}` } : base;
-}
+/**
+ * The dashboard only ever talks to its OWN origin: in production the backend
+ * serves this static export, and `next dev` proxies /outbound + /auth to the
+ * API (next.config.mjs). The session is an httpOnly cookie, so there are no
+ * tokens to attach — the browser sends it with every same-origin request.
+ */
+export const API_BASE = "";
 
-// A 401 means the session is gone (expired/revoked) — every subsequent call
-// would fail the same way, so sign out once and send the user to /login.
+// A 401 means the session is gone (expired/revoked/signed out) — every
+// subsequent call would fail the same way, so send the user to /login once.
 let redirectingToLogin = false;
 async function handleUnauthorized(path: string): Promise<never> {
-  if (!redirectingToLogin && typeof window !== "undefined") {
+  if (!redirectingToLogin && typeof window !== "undefined" && window.location.pathname !== "/login") {
     redirectingToLogin = true;
-    await supabase.auth.signOut().catch(() => {});
     window.location.assign("/login");
   }
   throw new Error(`API ${path} → 401 (session expired)`);
@@ -27,7 +28,7 @@ async function handleUnauthorized(path: string): Promise<never> {
 async function request(path: string, init: RequestInit, timeoutMs: number) {
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}${path}`, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    res = await fetch(`${API_BASE}${path}`, { ...init, credentials: "same-origin", signal: AbortSignal.timeout(timeoutMs) });
   } catch (err) {
     const timedOut = err instanceof Error && err.name === "TimeoutError";
     throw new Error(`API ${path} → ${timedOut ? `timeout after ${timeoutMs}ms` : "network error"}`);
@@ -41,7 +42,7 @@ async function request(path: string, init: RequestInit, timeoutMs: number) {
 }
 
 async function get(path: string) {
-  return request(path, { headers: await authHeaders() }, 15_000);
+  return request(path, {}, 15_000);
 }
 
 async function post(path: string, body?: unknown) {
@@ -49,7 +50,7 @@ async function post(path: string, body?: unknown) {
     path,
     {
       method: "POST",
-      headers: await authHeaders({ "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
     },
     15_000,
@@ -58,7 +59,52 @@ async function post(path: string, body?: unknown) {
 
 async function postForm(path: string, form: FormData) {
   // Uploads (lead workbooks) get a longer window.
-  return request(path, { method: "POST", headers: await authHeaders(), body: form }, 30_000);
+  return request(path, { method: "POST", body: form }, 30_000);
+}
+
+/** Read endpoints resolve `{ error }` on failure — throw it so loaders surface it. */
+function unwrap<T>(json: T & { error?: string }): T {
+  if (json && typeof json === "object" && typeof json.error === "string") throw new Error(json.error);
+  return json;
+}
+
+// --- Session -------------------------------------------------------------------
+
+export interface SessionUser {
+  email: string;
+  name: string | null;
+  role: string;
+}
+
+export interface Me {
+  user: SessionUser;
+  instance: { dialerEnabled: boolean; dataBackend: string };
+}
+
+/** The signed-in operator, or null when there is no valid session (no redirect). */
+async function me(): Promise<Me | null> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/auth/me`, { credentials: "same-origin", signal: AbortSignal.timeout(15_000) });
+  } catch {
+    throw new Error("API /auth/me → network error");
+  }
+  if (res.status === 401) return null;
+  if (!res.ok) throw new Error(`API /auth/me → ${res.status}`);
+  return (await res.json()) as Me;
+}
+
+async function login(email: string, password: string): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  const json = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string };
+  if (res.status === 429) return { ok: false, error: "Too many attempts — wait a few minutes and try again." };
+  return res.ok ? { ok: true } : { ok: false, error: json.error ?? `Sign-in failed (${res.status})` };
 }
 
 export interface SheetInfo {
@@ -279,9 +325,61 @@ export type WindowStatus = {
   groups: WindowStatusGroup[];
 };
 
+/** A call row joined with its campaign name + selected lead fields. */
+export type CallWithContext = Call & {
+  campaign_id?: string | null;
+  brand?: string | null;
+  campaign: { name: string | null } | null;
+  lead: { servicing_brand?: string | null; building_name?: string | null; contact_name?: string | null } | null;
+};
+
+export interface LiveCampaignRow {
+  campaign: Campaign;
+  dialedThisRun: number;
+  active: number;
+  qualified: number;
+}
+
+export interface AssistantSyncResult {
+  ok: boolean;
+  webhookUrl: string | null;
+  items: { target: string; action: "updated" | "created" | "skipped" | "failed"; id?: string; detail?: string }[];
+}
+
 let brandListPromise: Promise<BrandInfoOption[]> | null = null;
 
 export const api = {
+  me,
+  login,
+  logout: () => post("/auth/logout"),
+  changePassword: (current: string, next: string): Promise<{ ok: boolean; error?: string }> =>
+    post("/auth/password", { current, next }),
+  // Dashboard reads (these replaced the browser's direct Supabase queries).
+  campaigns: async (): Promise<Campaign[]> =>
+    (unwrap(await get("/outbound/campaigns")) as { campaigns?: Campaign[] }).campaigns ?? [],
+  campaignsLive: async (): Promise<LiveCampaignRow[]> =>
+    (unwrap(await get("/outbound/campaigns/live")) as { campaigns?: LiveCampaignRow[] }).campaigns ?? [],
+  stats: async (campaignId?: string | null): Promise<{ counts: Record<string, number>; total: number }> => {
+    const q = campaignId ? `?campaignId=${encodeURIComponent(campaignId)}` : "";
+    return unwrap(await get(`/outbound/stats${q}`)) as { counts: Record<string, number>; total: number };
+  },
+  leads: async (opts: { campaignId?: string | null; disposition?: string; offset: number; limit: number }): Promise<Lead[]> => {
+    const q = new URLSearchParams({ offset: String(opts.offset), limit: String(opts.limit) });
+    if (opts.campaignId) q.set("campaignId", opts.campaignId);
+    if (opts.disposition && opts.disposition !== "all") q.set("disposition", opts.disposition);
+    return (unwrap(await get(`/outbound/leads?${q.toString()}`)) as { leads?: Lead[] }).leads ?? [];
+  },
+  activeCalls: async (): Promise<CallWithContext[]> =>
+    (unwrap(await get("/outbound/calls/active")) as { calls?: CallWithContext[] }).calls ?? [],
+  recentCalls: async (limit = 60): Promise<CallWithContext[]> =>
+    (unwrap(await get(`/outbound/calls/recent?limit=${limit}`)) as { calls?: CallWithContext[] }).calls ?? [],
+  // Re-apply every Vapi assistant's config server-side (also re-points webhooks).
+  syncAssistants: (brand?: string): Promise<AssistantSyncResult> =>
+    request(
+      "/outbound/admin/assistants/sync",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(brand ? { brand } : {}) },
+      120_000,
+    ),
   analytics: (campaignId?: string | null, days = 30): Promise<AnalyticsResponse> => {
     const q = new URLSearchParams({ days: String(days) });
     if (campaignId) q.set("campaignId", campaignId);
@@ -330,7 +428,8 @@ export const api = {
     const json = (await get(`/outbound/system/insights`)) as { insights?: import("./types").CampaignInsight[] };
     return json.insights ?? [];
   },
-  approveInsight: (id: string, approvedBy?: string) => post(`/outbound/insights/${id}/approve`, { approvedBy }),
+  // The approver is the signed-in operator (recorded server-side from the session).
+  approveInsight: (id: string) => post(`/outbound/insights/${id}/approve`),
   rejectInsight: (id: string) => post(`/outbound/insights/${id}/reject`),
   // Remaining balances on Twilio + Vapi (cached 60s server-side).
   balances: (): Promise<BalancesResponse> => get(`/outbound/balances`),
@@ -363,8 +462,8 @@ export const api = {
     const json = (await get(`/outbound/brands?${q.toString()}`)) as { brands?: BrandInfo[] };
     return json.brands ?? [];
   },
-  // Authenticated download: a bearer header can't ride a bare <a href>, so fetch
-  // the export with the JWT and trigger a client-side blob download.
+  // Fetch the export (session cookie) and trigger a client-side blob download,
+  // so a 401 can redirect to login instead of downloading an error page.
   exportDownload: async (
     disposition: string | "all",
     format: "csv" | "xlsx",
@@ -376,7 +475,7 @@ export const api = {
     if (campaignId) q.set("campaignId", campaignId);
     if (brand) q.set("brand", brand);
     const res = await fetch(`${API_BASE}/outbound/export?${q.toString()}`, {
-      headers: await authHeaders(),
+      credentials: "same-origin",
       signal: AbortSignal.timeout(60_000),
     });
     if (res.status === 401) return handleUnauthorized("/outbound/export");

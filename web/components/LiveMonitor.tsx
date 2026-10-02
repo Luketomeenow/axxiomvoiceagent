@@ -1,21 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { supabase } from "@/lib/supabase";
-import { api } from "@/lib/api";
+import { api, type CallWithContext } from "@/lib/api";
+import { useLiveChanges } from "@/lib/live";
 import { useDebouncedLoader } from "@/lib/useDebouncedLoader";
-import type { Call, CallEvent } from "@/lib/types";
+import type { CallEvent } from "@/lib/types";
 import ErrorChip from "./ErrorChip";
 
-// Active call joined with its campaign name + lead brand (PostgREST embeds).
-type ActiveCall = Call & {
-  campaign?: { name: string | null } | null;
-  lead?: { servicing_brand: string | null; building_name: string | null } | null;
-};
+// Active call joined with its campaign name + lead brand (GET /outbound/calls/active).
+type ActiveCall = CallWithContext;
+
+// Stream rows carry no database id — number them locally for React keys.
+let nextEventKey = 1;
 
 /**
  * Live monitor: shows calls that are currently in flight and streams transcript
- * lines as they arrive via Supabase Realtime on outbound.call + outbound.call_event.
+ * lines as they arrive on the live change stream (outbound.call + outbound.call_event).
  */
 export function LiveMonitor() {
   const [activeCalls, setActiveCalls] = useState<ActiveCall[]>([]);
@@ -27,7 +27,7 @@ export function LiveMonitor() {
     try {
       const res = await api.endCall(callId);
       if (!res?.ok) {
-        // Surface the reason but keep the row; status will flip via Realtime if it ends.
+        // Surface the reason but keep the row; status flips via the live stream if it ends.
         console.warn("End call failed:", res?.reason);
         alert(`Could not end call: ${res?.reason ?? "unknown error"}`);
       }
@@ -39,17 +39,10 @@ export function LiveMonitor() {
   }
 
   const loadActive = useCallback(async () => {
-    // Only consider calls started recently. Without webhooks a dead call can be
-    // left "ringing" forever; this keeps the monitor honest even if one slips through.
-    const cutoff = new Date(Date.now() - 15 * 60 * 1000).toISOString();
-    const { data, error } = await supabase
-      .from("call")
-      .select("*, campaign:campaign_id(name), lead:lead_id(servicing_brand,building_name)")
-      .in("status", ["queued", "ringing", "in-progress"])
-      .gte("created_at", cutoff)
-      .order("created_at", { ascending: false });
-    if (error) throw new Error(error.message);
-    setActiveCalls((data as ActiveCall[]) ?? []);
+    // Only calls started in the last 15 minutes (server-side cutoff). Without
+    // webhooks a dead call can be left "ringing" forever; this keeps the
+    // monitor honest even if one slips through.
+    setActiveCalls(await api.activeCalls());
   }, []);
 
   const { trigger, loadNow, error } = useDebouncedLoader(loadActive);
@@ -59,35 +52,36 @@ export function LiveMonitor() {
   const pendingEventsRef = useRef<CallEvent[]>([]);
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const flush = useCallback(() => {
+    flushTimerRef.current = null;
+    const batch = pendingEventsRef.current;
+    pendingEventsRef.current = [];
+    if (!batch.length) return;
+    setEvents((prev) => {
+      const next = { ...prev };
+      for (const ev of batch) {
+        if (!ev.call_id) continue;
+        next[ev.call_id] = [...(next[ev.call_id] ?? []), ev].slice(-40);
+      }
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     void loadNow();
-    const flush = () => {
-      flushTimerRef.current = null;
-      const batch = pendingEventsRef.current;
-      pendingEventsRef.current = [];
-      if (!batch.length) return;
-      setEvents((prev) => {
-        const next = { ...prev };
-        for (const ev of batch) {
-          if (!ev.call_id) continue;
-          next[ev.call_id] = [...(next[ev.call_id] ?? []), ev].slice(-40);
-        }
-        return next;
-      });
-    };
-    const ch = supabase
-      .channel("live-monitor")
-      .on("postgres_changes", { event: "*", schema: "outbound", table: "call" }, trigger)
-      .on("postgres_changes", { event: "INSERT", schema: "outbound", table: "call_event" }, (payload) => {
-        pendingEventsRef.current.push(payload.new as CallEvent);
-        if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flush, 300);
-      })
-      .subscribe();
     return () => {
-      supabase.removeChannel(ch);
       if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
     };
-  }, [loadNow, trigger]);
+  }, [loadNow]);
+
+  useLiveChanges(["call", "call_event"], (change) => {
+    if (change.t === "call_event") {
+      for (const row of change.rows ?? []) pendingEventsRef.current.push({ id: nextEventKey++, ...row });
+      if (!flushTimerRef.current) flushTimerRef.current = setTimeout(flush, 300);
+      return;
+    }
+    trigger(); // call status changes + RESYNC
+  });
 
   return (
     <div className="card card-pad">

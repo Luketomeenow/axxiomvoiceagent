@@ -17,9 +17,10 @@
  * disclosure, consent, opt-out) — a rewrite that drops those is blocked.
  */
 
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 
 import { assertAnthropic, env } from "../config/env.ts";
+import { anthropicClient } from "./client.ts";
 import { log } from "../lib/logger.ts";
 import { db } from "../outbound/db.ts";
 import { getBrandAssistantId, getBrandPromptOverride, setBrandPromptOverride } from "../outbound/brandStore.ts";
@@ -193,7 +194,7 @@ export async function analyzeBrand(
 
   try {
     assertAnthropic();
-    if (!anthropic) anthropic = new Anthropic({ apiKey: env.anthropicApiKey });
+    if (!anthropic) anthropic = anthropicClient();
 
     const res = await anthropic.messages.create({
       // The reply carries a multi-paragraph report AND a complete replacement

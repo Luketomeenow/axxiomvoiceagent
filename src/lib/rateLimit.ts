@@ -4,8 +4,22 @@
  * the authenticated dashboard API. Keyed by client IP.
  */
 
-import type { MiddlewareHandler } from "hono";
+import type { Context, MiddlewareHandler } from "hono";
 import { log } from "./logger.ts";
+
+/**
+ * The client IP. App Service's front end APPENDS "ip:port" to X-Forwarded-For,
+ * so the right-most hop is the one it added (anything earlier is
+ * client-supplied), and the port must be stripped — keyed on the raw value,
+ * every new connection looked like a new client and the limit never tripped.
+ */
+export function clientIp(c: Context): string {
+  const hop = c.req.header("x-forwarded-for")?.split(",").pop()?.trim() || c.req.header("x-real-ip") || "";
+  if (!hop) return "unknown";
+  if (hop.startsWith("[")) return hop.slice(1, hop.indexOf("]")); // [ipv6]:port
+  const colons = hop.split(":").length - 1;
+  return colons === 1 ? hop.slice(0, hop.indexOf(":")) : hop; // ipv4:port → ipv4; bare ipv6 stays
+}
 
 export function rateLimit(opts: { windowMs: number; max: number }): MiddlewareHandler {
   const hits = new Map<string, { count: number; resetAt: number }>();
@@ -14,10 +28,7 @@ export function rateLimit(opts: { windowMs: number; max: number }): MiddlewareHa
     if (c.req.method === "OPTIONS") return next();
 
     const now = Date.now();
-    const key =
-      c.req.header("x-forwarded-for")?.split(",")[0]?.trim() ||
-      c.req.header("x-real-ip") ||
-      "unknown";
+    const key = clientIp(c);
 
     let entry = hits.get(key);
     if (!entry || entry.resetAt <= now) {
