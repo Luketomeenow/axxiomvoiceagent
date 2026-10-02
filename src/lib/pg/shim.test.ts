@@ -319,13 +319,18 @@ describe("writes", () => {
 
 describe("dataClient (azure) — change events", () => {
   test("publishes one event per successful write, none for failures or reads", async () => {
-    process.env.DATA_BACKEND = "azure";
-    process.env.AZURE_PG_HOST = "127.0.0.1";
-    process.env.AZURE_PG_PORT = String(port);
-    process.env.AZURE_PG_DATABASE = "postgres";
-    process.env.AZURE_PG_USER = "postgres";
-    process.env.AZURE_PG_PASSWORD = "unused";
-    process.env.AZURE_PG_SSL = "disable";
+    // Set the config object itself, not process.env: another test file may have
+    // loaded env.ts already (bun shares one module registry across files).
+    const { env } = await import("../../config/env.ts");
+    Object.assign(env, {
+      dataBackend: "azure",
+      azurePgHost: "127.0.0.1",
+      azurePgPort: port,
+      azurePgDatabase: "postgres",
+      azurePgUser: "postgres",
+      azurePgPassword: "unused",
+      azurePgSsl: "disable",
+    });
     const { dataClient } = await import("../dataClient.ts");
     const { onChange } = await import("../changes.ts");
     const seen: { table: string; op: string; rows?: unknown[]; patch?: unknown }[] = [];
