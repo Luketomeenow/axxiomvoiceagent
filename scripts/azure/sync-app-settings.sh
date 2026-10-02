@@ -124,7 +124,15 @@ echo "${#settings[@]} settings prepared for $APP ($(printf '%s\n' "${settings[@]
 if $APPLY; then
   # Key Vault references resolve with the USER-ASSIGNED identity only when the
   # app is told to use it (default is the system identity, which this app may not have).
-  az webapp update -g "$RG" -n "$APP" --set keyVaultReferenceIdentity="$UMI_ID" -o none
+  # Changing it needs Managed Identity Operator on the UMI (Zach) — so only try
+  # when it isn't already right.
+  CURRENT_KV_ID="$(az webapp show -g "$RG" -n "$APP" --query keyVaultReferenceIdentity -o tsv)"
+  if [[ "${CURRENT_KV_ID:l}" != "${UMI_ID:l}" ]]; then
+    az webapp update -g "$RG" -n "$APP" --set keyVaultReferenceIdentity="$UMI_ID" -o none ||
+      { echo "STOP: set keyVaultReferenceIdentity=$UMI_ID on $APP (needs Managed Identity Operator on $UMI — ask Zach)"; exit 1; }
+  else
+    echo "keep   keyVaultReferenceIdentity = $UMI (already set)"
+  fi
   az webapp config appsettings set -g "$RG" -n "$APP" --settings "${settings[@]}" --query "length(@)" -o tsv
   az webapp config set -g "$RG" -n "$APP" \
     --startup-file "node --enable-source-maps dist/server.mjs" --always-on true \
