@@ -60,8 +60,8 @@ AI campaign-improvement proposals (see self-learning in [outbound-campaigns.md](
 Small key/value store for runtime config. Keys in use:
 - `brand_assistant:<slug>` → that brand's Vapi assistant id (written by `create-brand-assistants`).
 - `brand_prompt:<slug>` → an **approved** prompt override from a campaign insight (honored by `create-brand-assistants` on re-runs).
-- `brand_voice:<slug>` → a brand's chosen voice (optional override).
-- `vapi_voice_id` / `elevenlabs_voice_id` → the env-default Vapi / Convai POC voices (the dashboard voice picker).
+- `brand_voice:<slug>` → optional voice override for a brand's Vapi assistant, in its provider (Vapi native today); slug `default` = the generic outbound agent. No UI; set by hand, then re-sync.
+- `elevenlabs_voice_id` → the ElevenLabs evaluation agent's voice (the dashboard voice card). (`vapi_voice_id` / `outbound_voice_id` are leftovers, no longer read.)
 
 ### Analytics views (`v_*`, all `security_invoker`)
 Read by `GET /outbound/analytics` + `/analytics/compliance` and the dashboard `/analytics` page:

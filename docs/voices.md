@@ -5,9 +5,9 @@
 The agents can speak with two voice providers, chosen in `src/assistant/voicePipeline.ts`:
 
 - **Vapi native voices** (`buildVapiVoice(voiceId)`) — `{ provider: "vapi", voiceId, version: 2 }`. No external credential, lowest latency, V2 model for a human sound. **The per-brand outbound agents and the inbound agent use these.**
-- **ElevenLabs** (`buildVoice(voiceId)`) — `{ provider: "11labs", model: "eleven_flash_v2_5", … }`. Used by the generic/fallback outbound assistant.
+- **ElevenLabs** (`buildVoice(voiceId)`) — `{ provider: "11labs", model: "eleven_flash_v2_5", … }`. **No Vapi agent uses it today**; it's only for the ElevenLabs evaluation agent below. (The generic/fallback outbound assistant moved to Vapi's "Elliot" in October 2026; see the note.)
 
-> **Important:** Vapi renders voices from **its own connected ElevenLabs/voice account**, *not* the personal `ELEVENLABS_API_KEY` in `.env`. So a custom voice that exists only in your personal ElevenLabs account (e.g. a Voice-Design voice) **will not load on Vapi assistants** — you'll get "Couldn't find 11labs voice." Vapi native voices avoid this entirely, which is why the brand + inbound agents use them.
+> **Important:** Vapi renders voices from **its own connected ElevenLabs/voice account**, *not* the personal `ELEVENLABS_API_KEY` in `.env`. So a custom voice that exists only in your personal ElevenLabs account (e.g. a Voice-Design voice) **will not load on Vapi assistants** — you'll get "Couldn't find 11labs voice." Vapi native voices avoid this entirely, which is why every Vapi agent uses them. Worse than a missing voice: Vapi **rejects the whole assistant update**, so the assistant sync can't push anything else to that assistant either (this kept the generic agent on its August config, and on the old Railway webhook, until it was switched to "Elliot").
 
 ### Vapi native voice IDs
 
@@ -19,14 +19,9 @@ For the ElevenLabs-voiced assistants, `buildVoice()` uses **Flash v2.5**, `stabi
 
 ## Dashboard voice picker
 
-The **Voice** card (`web/components/VoicePicker.tsx`) lists the account's ElevenLabs voices (needs `ELEVENLABS_API_KEY` on the backend) and lets you set a voice **independently per target** via a toggle:
+The **ElevenLabs agent voice** card (`web/components/VoicePicker.tsx`) lists the account's ElevenLabs voices (needs `ELEVENLABS_API_KEY` on the backend) and sets the voice of the **ElevenLabs evaluation agent** (below), stored as `elevenlabs_voice_id` in `app_setting` and applied live. Endpoints: `GET /outbound/voices`, `POST /outbound/voice` (`{ voiceId, target: "elevenlabs" }`).
 
-- **ElevenLabs agent** → the Convai POC agent (below).
-- **Vapi agent** → the env-default Vapi assistant.
-
-Each target's choice is stored separately in `app_setting` (`elevenlabs_voice_id` / `vapi_voice_id`) and applied live by PATCHing that agent. Endpoints: `GET /outbound/voices`, `POST /outbound/voice` (`{ voiceId, target }`). Re-runs of `create-outbound-assistant` honor the picker's stored choice (falling back to `ELEVENLABS_VOICE_ID`).
-
-> Per-brand voices are currently set in the registry (`brands.ts`) + `create-brand-assistants`, not yet in this picker.
+The **Vapi phone agents' voices are set in code**, not in the picker: each brand's `voiceId` in `src/assistant/brands.ts` (the generic agent is the `default` brand → "Elliot"), optionally overridden per slug by `brand_voice:<slug>` in `app_setting` (no UI; slug `default` = the generic agent). Change one, deploy, then **Re-sync Vapi assistants**. `POST /outbound/voice` with `target: "vapi"` is refused with that explanation. (The old picker option applied ElevenLabs voices to the generic agent; its `vapi_voice_id` setting is no longer read.)
 
 ## ElevenLabs Conversational AI — evaluation POC
 

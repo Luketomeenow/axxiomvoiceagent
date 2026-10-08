@@ -22,7 +22,6 @@ import {
   getBrandVoiceIdStrict,
   setBrandAssistantId,
 } from "../outbound/brandStore.ts";
-import { getVapiVoiceIdStrict } from "../outbound/voice.ts";
 import { BRANDS, getBrand, type Brand } from "./brands.ts";
 import { buildAssistantConfig } from "./config.ts";
 import { buildOutboundAssistantConfig } from "./outbound/config.ts";
@@ -122,9 +121,12 @@ async function syncGenericOutbound(): Promise<SyncItem> {
     return { target: "outbound", action: "skipped", detail: "OUTBOUND_ASSISTANT_ID not set (create it with bun run create-outbound-assistant)" };
   }
   try {
-    // Unbranded calls' approved prompt lives under brand_prompt:default (strict reads, as above).
+    // Unbranded calls' approved prompt + optional voice override live under the
+    // "default" slug (strict reads, as above). The voice is the default brand's
+    // Vapi native voice unless brand_voice:default says otherwise.
     const promptOverride = await getBrandPromptOverrideStrict("default");
-    const config = buildOutboundAssistantConfig({ voiceId: await getVapiVoiceIdStrict(), promptOverride });
+    const voiceId = await getBrandVoiceIdStrict("default");
+    const config = buildOutboundAssistantConfig({ voiceId, promptOverride });
     await vapi(`/assistant/${env.outboundAssistantId}`, "PATCH", config);
     return { target: "outbound", action: "updated", id: env.outboundAssistantId };
   } catch (err) {

@@ -82,8 +82,8 @@ Two surfaces: the **HTTP API** (Hono, consumed by Vapi and the dashboard) and th
 
 | Method | Path | Request | Purpose |
 |--------|------|---------|---------|
-| `GET` | `/outbound/voices` | — | ElevenLabs voices + each agent's current voice `{ vapi, elevenlabs }`. Needs `ELEVENLABS_API_KEY`. |
-| `POST` | `/outbound/voice` | `{ voiceId, target: "vapi"\|"elevenlabs" }` | Set + apply a voice to one agent (independent per target). |
+| `GET` | `/outbound/voices` | — | ElevenLabs voices + current voices `{ vapi, elevenlabs }` (`vapi` = the generic phone agent's Vapi voice, read-only). Needs `ELEVENLABS_API_KEY` for the list. |
+| `POST` | `/outbound/voice` | `{ voiceId, target: "elevenlabs" }` | Set + apply the ElevenLabs evaluation agent's voice. `target: "vapi"` → 400: the phone agents' voices are set in `brands.ts` (see [voices.md](voices.md)). |
 | `GET` | `/outbound/el-agent/signed-url` | — | Signed URL for the in-browser ElevenLabs Convai POC session (key stays server-side). |
 
 **`DialResult`** (returned by `call-now` and `test-call`): `{ ok: boolean, reason?: string, vapiCallId?: string, callRowId?: string }` — HTTP 200 when `ok`, else 400.

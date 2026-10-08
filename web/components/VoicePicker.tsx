@@ -3,44 +3,32 @@
 import { useEffect, useState } from "react";
 import { api, type VoiceOption, type VoiceTarget } from "@/lib/api";
 
-const TARGETS: { value: VoiceTarget; label: string }[] = [
-  { value: "elevenlabs", label: "ElevenLabs agent" },
-  { value: "vapi", label: "Vapi agent" },
-];
-
 /**
- * Pick the ElevenLabs voice for ONE agent at a time (independent per target).
- * Lists the account's voices (needs ELEVENLABS_API_KEY), previews them, and
- * applies the choice live to whichever agent is selected. Falls back to a manual
- * voiceId field if the catalog can't be fetched.
+ * Pick the voice of the ElevenLabs evaluation agent. Lists the account's
+ * ElevenLabs voices (needs ELEVENLABS_API_KEY), previews them, and applies the
+ * choice live. Falls back to a manual voiceId field if the catalog can't be
+ * fetched. The Vapi phone agents aren't switched here: they use Vapi's
+ * built-in voices, set per brand in code (src/assistant/brands.ts).
  */
 export function VoicePicker() {
   const [voices, setVoices] = useState<VoiceOption[]>([]);
-  const [target, setTarget] = useState<VoiceTarget>("elevenlabs");
   const [current, setCurrent] = useState<Record<VoiceTarget, string>>({ vapi: "", elevenlabs: "" });
   const [selected, setSelected] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
 
-  async function load(forTarget: VoiceTarget) {
+  async function load() {
     const r = await api.getVoices();
     setVoices(r.voices ?? []);
     setCurrent(r.current ?? { vapi: "", elevenlabs: "" });
-    setSelected(r.current?.[forTarget] ?? "");
+    setSelected(r.current?.elevenlabs ?? "");
     setError(r.error ?? null);
   }
 
   useEffect(() => {
-    load(target).catch((e) => setError(String(e)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    load().catch((e) => setError(String(e)));
   }, []);
-
-  function switchTarget(t: VoiceTarget) {
-    setTarget(t);
-    setSelected(current[t] ?? "");
-    setStatus(null);
-  }
 
   function preview() {
     const url = voices.find((v) => v.voiceId === selected)?.previewUrl;
@@ -52,12 +40,12 @@ export function VoicePicker() {
     setBusy(true);
     setStatus(null);
     try {
-      const r = await api.setVoice(selected.trim(), target);
+      const r = await api.setVoice(selected.trim(), "elevenlabs");
       if (r && r.ok === false) {
         setStatus(`Could not switch: ${r.error ?? "unknown error"}`);
       } else {
-        setCurrent((c) => ({ ...c, [target]: selected.trim() }));
-        setStatus(`Applied to the ${target === "vapi" ? "Vapi" : "ElevenLabs"} agent.`);
+        setCurrent((c) => ({ ...c, elevenlabs: selected.trim() }));
+        setStatus("Applied to the ElevenLabs agent.");
       }
     } catch (e) {
       setStatus(`Error (is the backend deployed?): ${String(e)}`);
@@ -67,15 +55,17 @@ export function VoicePicker() {
   }
 
   const selectedVoice = voices.find((v) => v.voiceId === selected);
-  const dirty = selected.trim() && selected.trim() !== current[target];
+  const dirty = selected.trim() && selected.trim() !== current.elevenlabs;
 
   return (
     <div className="card card-pad">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <h2 className="section-title">Voice</h2>
+          <h2 className="section-title">ElevenLabs agent voice</h2>
           <p className="mt-0.5 text-xs text-slate-400">
-            Set each agent&apos;s voice independently. Applies live; other voice settings stay the same.
+            For the ElevenLabs evaluation agent. Applies live; other voice settings stay the same. The phone agents
+            use Vapi&apos;s built-in voices, set per brand in code
+            {current.vapi ? ` (generic agent: ${current.vapi})` : ""}.
           </p>
         </div>
         {selectedVoice?.previewUrl && (
@@ -83,21 +73,6 @@ export function VoicePicker() {
             ▶ Preview
           </button>
         )}
-      </div>
-
-      <div className="mt-3 inline-flex rounded-lg border border-white/10 bg-ink p-1">
-        {TARGETS.map((t) => (
-          <button
-            key={t.value}
-            onClick={() => switchTarget(t.value)}
-            disabled={busy}
-            className={`rounded-md px-3 py-1.5 text-sm font-semibold ${
-              target === t.value ? "bg-sky-500 text-ink" : "text-slate-300 hover:bg-white/5"
-            } disabled:opacity-50`}
-          >
-            {t.label}
-          </button>
-        ))}
       </div>
 
       <div className="mt-4 flex flex-wrap items-end gap-3">
@@ -130,7 +105,7 @@ export function VoicePicker() {
         )}
 
         <button onClick={apply} disabled={busy || !dirty} className="btn btn-primary">
-          {busy ? "Applying…" : `Apply to ${target === "vapi" ? "Vapi" : "ElevenLabs"}`}
+          {busy ? "Applying…" : "Apply"}
         </button>
         {status && <span className="text-sm text-slate-300">{status}</span>}
       </div>
@@ -138,8 +113,8 @@ export function VoicePicker() {
       {error && (
         <p className="mt-3 text-xs text-amber-300">
           Couldn&apos;t list voices ({error}). Add <code>ELEVENLABS_API_KEY</code> to the backend (.env locally, App Service settings / Key Vault in Azure) for the
-          full list with previews — you can still paste a voiceId above. Current ({target}):{" "}
-          <code>{current[target] || "—"}</code>
+          full list with previews — you can still paste a voiceId above. Current:{" "}
+          <code>{current.elevenlabs || "—"}</code>
         </p>
       )}
     </div>

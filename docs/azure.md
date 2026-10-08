@@ -208,10 +208,12 @@ a laptop on `main`, re-run the `create-*-assistant` scripts with `SERVER_URL`=th
 
 **2. After** (the following week):
 - Merge `feat/azure-migration` → `main`; delete the Railway project and the Netlify site.
-- **Hub follow-up** (axxiommarketinghub, `src/lib/supabase/admin.ts`): its hybrid client still sends
-  `schema("outbound")` to Supabase — route `outbound` to Azure Postgres, or the hub's Voice page,
-  brand report emails and agent service keep showing the frozen Supabase copy. (Its
-  `public.ax_voice_call` reads already go to Azure — and start returning data after step 3.)
+- **Hub follow-up — done 2026-10-08.** The hub's hybrid client (`src/lib/supabase/admin.ts`) sends
+  a schema to Azure Postgres only when it's listed in `AZURE_PG_SCHEMAS`. Both hub apps
+  (`app-axxiom-mktg-hub`, `func-axxiom-mktg-node`) now have `AZURE_PG_SCHEMAS=aeo,outbound`, so the
+  Voice tab, the Marketing Report and the Repo Optimizer's voice check read `outbound.*` from Azure
+  (as `umi-marketing-functions`, granted by `voice_schema.sql`). Its agent-service and its
+  `public.ax_voice_call` reads were already on Azure.
 - Fabric: include `outbound.*` + `public.ax_voice_call` in the Azure Postgres mirror; drop
   `ax_voice_call` from the legacy `supabase_mirror` notebook.
 - Supabase can be switched off only when the hub's remaining schemas (Meta, aeo, apollo_agent,
@@ -233,7 +235,8 @@ a laptop on `main`, re-run the `create-*-assistant` scripts with `SERVER_URL`=th
   The relay exists because Foundry rejects `max_tokens`, custom `temperature` and Vapi's extra
   fields (each an HTTP 400 = dead turn). Takes effect on the next assistant sync; rollback =
   `VOICE_PROVIDER=anthropic` + sync. Speech-to-text, voices and the phone carrier still run in
-  Vapi / Deepgram / ElevenLabs / Twilio.
+  Vapi / Deepgram / Twilio (every Vapi agent uses a Vapi native voice; ElevenLabs is only the
+  separate evaluation agent).
 
 ## Local development
 

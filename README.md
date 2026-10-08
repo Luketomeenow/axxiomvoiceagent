@@ -99,7 +99,7 @@ Expose it for Vapi during local testing (e.g. `ngrok http 3000`) and set
 | Survey calendar | `GHL_CALENDAR_ID` |
 | New-lead pipeline + stage | `GHL_PIPELINE_ID`, `GHL_PIPELINE_STAGE_ID` |
 | Human/safety transfer number | `TRANSFER_PHONE_NUMBER` |
-| ElevenLabs voice id | `ELEVENLABS_VOICE_ID` (+ EL key in Vapi dashboard) |
+| ElevenLabs evaluation agent voice | `ELEVENLABS_VOICE_ID` (the phone agents use Vapi's built-in voices, set in `brands.ts`) |
 | Database (Azure Postgres, managed identity) | `DATA_BACKEND=azure`, `AZURE_PG_USER`, `AZURE_PG_CLIENT_ID` (+ host/db defaults) |
 | Dashboard session signing (≥ 32 chars) | `DASHBOARD_SESSION_SECRET` |
 | Twilio (caller-ID import + cost sync) | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` |

@@ -1,7 +1,9 @@
 /**
  * Per-brand runtime config persisted in outbound.app_setting:
  *   brand_assistant:<slug> → the brand's Vapi assistant id (set by create-brand-assistants)
- *   brand_voice:<slug>     → the brand's chosen ElevenLabs voice (set in the dashboard)
+ *   brand_voice:<slug>     → optional voice override for that brand's assistant, in the brand's
+ *                            voice provider (Vapi native today); slug "default" = the
+ *                            generic outbound agent. No dashboard control — set by hand.
  * The dialer reads these to route each call to the right brand's assistant + voice.
  */
 

@@ -47,9 +47,9 @@ export function buildOutboundAssistantConfig(opts: { brand?: Brand; voiceId?: st
       tools: buildOutboundTools(toE164(brand.localPhone) ?? undefined),
     }),
 
-    // Per-brand voice. Brands use Vapi's native voices (no external credential,
-    // lowest latency); the env-default/fallback brand stays on ElevenLabs.
-    // A dashboard override (opts.voiceId) wins over the registry default.
+    // Per-brand voice. Every brand (and the default/fallback one) uses Vapi's
+    // native voices: no external credential, lowest latency. An override
+    // (opts.voiceId, from brand_voice:<slug>) wins over the registry default.
     voice:
       brand.voiceProvider === "11labs"
         ? buildVoice(opts.voiceId ?? brand.voiceId)

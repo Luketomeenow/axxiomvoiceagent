@@ -789,7 +789,7 @@ outbound.get("/outbound/el-agent/signed-url", async (c) => {
 
 // List ElevenLabs voices + each agent's currently-selected voice (for the picker).
 outbound.get("/outbound/voices", async (c) => {
-  const current = await getCurrentVoices(); // { vapi, elevenlabs }
+  const current = await getCurrentVoices(); // { vapi (generic call agent, read-only), elevenlabs }
   try {
     const voices = await listElevenLabsVoices();
     return c.json({ voices, current });
@@ -799,7 +799,8 @@ outbound.get("/outbound/voices", async (c) => {
   }
 });
 
-// Switch ONE agent's voice (independent per target). Defaults to the ElevenLabs agent.
+// Switch the ElevenLabs evaluation agent's voice. target "vapi" is refused with
+// an explanation: the Vapi call agents' voices are set in code (brands.ts).
 outbound.post("/outbound/voice", async (c) => {
   const body = await c.req
     .json<{ voiceId?: string; target?: VoiceTarget }>()

@@ -64,4 +64,4 @@ Each brand declares a `consentPosture` and `timezone` that drive behavior:
 
 Edit `src/assistant/brands.ts` (name, value props, voice, compliance) and re-run `create-brand-assistants` (it PATCHes existing assistants by their stored id). Caller-ID swaps only need the new `vapiPhoneNumberId` in the registry (register the DID first with `import-twilio-numbers`) — no assistant re-run required. To swap just a voice, see [voices.md](voices.md).
 
-> The generic env-configured outbound assistant (`OUTBOUND_ASSISTANT_ID`) still exists as the **fallback/default** for any lead/campaign that resolves to no brand, and for `test-call`s without a `brand`. Its voice is the dashboard voice-picker choice when set, else `ELEVENLABS_VOICE_ID` (ElevenLabs path — see [voices.md](voices.md)).
+> The generic env-configured outbound assistant (`OUTBOUND_ASSISTANT_ID`) still exists as the **fallback/default** for any lead/campaign that resolves to no brand, and for `test-call`s without a `brand`. Its voice is Vapi's native "Elliot" (the `default` brand in `brands.ts`; override with `brand_voice:default`), the same kind of voice as every brand — see [voices.md](voices.md).

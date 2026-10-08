@@ -46,12 +46,11 @@ async function main() {
     console.warn("ℹ️  TRANSFER_PHONE_NUMBER not set — the transferToHuman tool will be omitted.\n");
   }
 
-  // Honor the Vapi voice chosen in the dashboard (falls back to ELEVENLABS_VOICE_ID)
-  // and an approved prompt for unbranded calls (brand_prompt:default) — otherwise
-  // re-running this script would silently revert an approved improvement.
-  const { getVapiVoiceId } = await import("../src/outbound/voice.ts");
-  const { getBrandPromptOverride } = await import("../src/outbound/brandStore.ts");
-  const voiceId = await getVapiVoiceId();
+  // Honor the overrides for unbranded calls (brand_prompt:default, brand_voice:default)
+  // — otherwise re-running this script would silently revert an approved
+  // improvement. Same inputs as the dashboard's assistant sync (src/assistant/sync.ts).
+  const { getBrandPromptOverride, getBrandVoiceId } = await import("../src/outbound/brandStore.ts");
+  const voiceId = await getBrandVoiceId("default");
   const promptOverride = await getBrandPromptOverride("default");
   if (promptOverride) console.log("   (using the approved prompt override for unbranded calls)");
   const config = buildOutboundAssistantConfig({ voiceId, promptOverride });

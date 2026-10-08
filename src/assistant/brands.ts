@@ -245,8 +245,11 @@ export function defaultBrand(): Brand {
     consentPosture: "all-party",
     timezone: env.outboundTimezone,
     complianceNote: "",
-    voiceProvider: "11labs",
-    voiceId: env.elevenLabsVoiceId || undefined,
+    // Vapi native, like every brand + the inbound agent. A custom ElevenLabs
+    // voice can't load in Vapi without an ElevenLabs key in the Vapi account
+    // (there is none), and Vapi rejects the whole assistant update.
+    voiceProvider: "vapi",
+    voiceId: "Elliot",
     vapiPhoneNumberId: env.vapiPhoneNumberId || undefined,
   };
 }
